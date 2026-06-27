@@ -30,9 +30,14 @@ An enterprise-grade financial engineering pipeline that solves the customer chur
 
 1. Clone the repository:
    ```bash
-   git clone [https://github.com/Har-Khachatryan/sirius-capital-quant-engine.git](https://github.com/YOUR_USERNAME/sirius-capital-quant-engine.git)
+   git clone [https://github.com/Har-Khachatryan/sirius-capital-quant-engine.git](https://github.com/Har-Khachatryan/sirius-capital-quant-engine.git)
    cd sirius-capital-quant-engine
 
+2. Install Dependencies Ensure you have Python installed, then run the following command to install all the required financial and machine learning libraries:
+   pip install -r requirements.txt
+
+3. Run the Pipeline Execute the complete end-to-end production batch simulation:
+   python sirius_quant_engine_v3.py
    
 ## 📊 Production Execution Output (v3.1)
 
