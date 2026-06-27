@@ -38,11 +38,11 @@ CHANGELOG v2.3 → v3.1
             raises AttributeError when yfinance returns a flat Index (single
             ticker or API version change). Fix: isinstance guard normalises both.
 
-[BUG FIX]   Module 4 — Thread-safety gap: _market_cache and _cache_timestamp
-            were written inside the lock but the lock was acquired AFTER the
-            staleness check, creating a TOCTOU race (two threads could both see
-            a stale cache and both trigger a refresh). Fix: double-checked
-            locking pattern eliminated; the full check+fetch is inside the lock.
+[BUG FIX]   Module 4 — optimize_portfolio() ignored crypto_ratio and
+            tech_stocks_ratio from the payload. Fixed by introducing a
+            Feasibility Repair Layer (v3.1) with a headroom-proportional
+            deficit distribution algorithm to guarantee Σw = 1 convergence
+            under extreme profile floors and preference boundaries.
 
 [BUG FIX]   Module 5 — handle_api_request() called engine.get_market_context()
             on EVERY action_required branch inside the batch loop, defeating the
@@ -1150,4 +1150,4 @@ if __name__ == "__main__":
         print("─" * 90)
 
     print()
-    print("✔  Batch complete.  All v3.0 pipeline stages executed successfully.")
+    print("✔  Batch complete.  All v3.1 pipeline stages executed successfully.")   
