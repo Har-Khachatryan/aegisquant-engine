@@ -1,0 +1,7 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Model artifacts and datasets
+sirius_artifacts.pkl
+.ipynb_checkpoints/
