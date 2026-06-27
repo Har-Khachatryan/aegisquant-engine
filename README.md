@@ -34,9 +34,11 @@ An enterprise-grade financial engineering pipeline that solves the customer chur
    cd sirius-capital-quant-engine
 
 2. Install Dependencies Ensure you have Python installed, then run the following command to install all the required financial and machine learning libraries:
+   ```bash
    pip install -r requirements.txt
 
 3. Run the Pipeline Execute the complete end-to-end production batch simulation:
+   ```bash
    python sirius_quant_engine_v3.py
    
 ## 📊 Production Execution Output (v3.1)
