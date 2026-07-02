@@ -26,8 +26,8 @@ aegisquant/
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/Har-Khachatryan/sirius-capital-quant-engine.git
-cd sirius-capital-quant-engine
+git clone https://github.com/Har-Khachatryan/aegisquant-engine.git
+cd aegisquant-engine
 ```
 ### 2. Create and activate a virtual environment
 ```
