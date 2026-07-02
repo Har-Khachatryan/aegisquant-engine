@@ -28,27 +28,27 @@ aegisquant/
 ```bash
 git clone https://github.com/Har-Khachatryan/sirius-capital-quant-engine.git
 cd sirius-capital-quant-engine
-
+```
 ### 2. Create and activate a virtual environment
 ```
 python -m venv aegis_env
 aegis_env\Scripts\activate      # Windows
 # source aegis_env/bin/activate   # Linux/macOS
-
+```
 ### 3. Install dependencies
 ```
 pip install -r requirements.txt
-
+```
 ### 4. Run the Streamlit Dashboard
 ```
 streamlit run app.py
 The dashboard will open in your browser at http://localhost:8501.
-
+```
 ### 5. (Optional) Start the REST API
 ```
 uvicorn api:app --host 0.0.0.0 --port 8000
 Then open http://localhost:8000/docs for interactive Swagger documentation.
-
+```
 
 🧠 Key Features
 Unified ML pipeline – KMeans investor segmentation feeds directly into XGBoost churn classifier with monotonic constraints.
@@ -83,10 +83,10 @@ It is automatically saved after the first training run.
 
 Schedule monitor_and_retrain.py daily (Windows Task Scheduler / cron):
 
-```bash
+```
 python monitor_and_retrain.py
 The script compares current production features against the reference and triggers run_training_pipeline() if drift exceeds the threshold.
-
+```
 
 📈 Example API Response
 POST /predict
@@ -101,6 +101,7 @@ POST /predict
   "crypto_ratio": 0.4,
   "tech_stocks_ratio": 0.5
 }
+```
 Response
 
 ```json
@@ -112,6 +113,7 @@ Response
   ],
   "model_version": "aegis_quant_v3.1_cross_pollination"
 }
+```
 🛠️ Technologies
 XGBoost with monotonic constraints
 
