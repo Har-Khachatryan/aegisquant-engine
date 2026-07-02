@@ -130,6 +130,7 @@ Pydantic (data contracts)
 yfinance (market data)
 
 📝 Version History
+
 v3.1 – Unified cross‑pollination pipeline, feasibility repair layer, stable API, drift monitor.
 
 v3.0 – Initial modular architecture, bug fixes, production hardening.
