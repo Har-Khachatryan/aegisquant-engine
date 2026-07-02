@@ -86,7 +86,7 @@ Schedule monitor_and_retrain.py daily (Windows Task Scheduler / cron):
 ```
 python monitor_and_retrain.py
 ```
-#The script compares current production features against the reference and triggers run_training_pipeline() if drift exceeds the threshold.
+The script compares current production features against the reference and triggers run_training_pipeline() if drift exceeds the threshold.
 
 
 📈 Example API Response
