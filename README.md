@@ -29,22 +29,22 @@ aegisquant/
 git clone https://github.com/Har-Khachatryan/sirius-capital-quant-engine.git
 cd sirius-capital-quant-engine
 
-2. Create and activate a virtual environment
+### 2. Create and activate a virtual environment
 ```
 python -m venv aegis_env
 aegis_env\Scripts\activate      # Windows
 # source aegis_env/bin/activate   # Linux/macOS
 
-3. Install dependencies
+### 3. Install dependencies
 ```
 pip install -r requirements.txt
 
-4. Run the Streamlit Dashboard
+### 4. Run the Streamlit Dashboard
 ```
 streamlit run app.py
 The dashboard will open in your browser at http://localhost:8501.
 
-5. (Optional) Start the REST API
+### 5. (Optional) Start the REST API
 ```
 uvicorn api:app --host 0.0.0.0 --port 8000
 Then open http://localhost:8000/docs for interactive Swagger documentation.
