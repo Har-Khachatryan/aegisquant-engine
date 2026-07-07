@@ -1,6 +1,16 @@
-# 🛡️ AegisQuant — AI Portfolio Shield & Risk Engine v3.1
+# AegisQuant v3.2 — AI-Driven Portfolio Risk & Optimization Engine
 
-<img width="1920" height="1037" alt="dashboard" src="https://github.com/user-attachments/assets/80b6f0df-7d31-4787-9f07-1f968266589e" />
+<img width="1920" height="1037" alt="dashboard" src="https://github.com/user-attachments/assets/bc00242c-e49d-4c14-a0e9-e2726f18b969" />
+
+AegisQuant is a production-grade algorithmic engine that combines machine learning risk modeling, real-time portfolio optimization, and robust MLOps monitoring.
+
+### 🚀 What's New in v3.2 (Production Hardening)
+* **Local Explainability (SHAP):** Replaced global feature importances with an atomic `shap.TreeExplainer` sequence inside the FastAPI lifecycle, delivering individualized, legally auditable client risk drivers (GDPR Art. 22 compliant).
+* **Safe Native Serialization:** Eliminated high-risk Pickle dependencies in the API path. Models are serialized natively via `xgb_model.save_model("aegis_xgb.json")` alongside a decoupled `ProcessorBundle` to prevent Remote Code Execution (RCE) vulnerabilities.
+* **Non-Blocking Async Market Fetching:** Implemented an autonomous `_MarketDataWorker` daemon thread that updates market context via atomic pointer swaps, completely lifting network I/O overhead from the endpoint hot path (0ms API response latency degradation).
+* **Unified Domain Models:** Consolidated REST payloads and core models into a strict, single-source-of-truth Pydantic v2 validation schema with automated runtime constraints.
+
+# 🛡️ AegisQuant — AI Portfolio Shield & Risk Engine v3.1
 
 **Enterprise-grade churn prediction and dynamic portfolio optimization engine**  
 Built with XGBoost, KMeans clustering, Ledoit‑Wolf shrinkage, and Dynamic Markowitz optimization.
