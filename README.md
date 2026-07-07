@@ -1,6 +1,6 @@
 # 🛡️ AegisQuant — AI Portfolio Shield & Risk Engine v3.1
 
-![Uploading dashboard.png…]()
+<img width="1920" height="1037" alt="dashboard" src="https://github.com/user-attachments/assets/80b6f0df-7d31-4787-9f07-1f968266589e" />
 
 **Enterprise-grade churn prediction and dynamic portfolio optimization engine**  
 Built with XGBoost, KMeans clustering, Ledoit‑Wolf shrinkage, and Dynamic Markowitz optimization.
