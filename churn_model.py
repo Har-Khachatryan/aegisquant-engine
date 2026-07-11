@@ -22,11 +22,13 @@ Upgrade v3.1 → v3.2
 
 from __future__ import annotations
 
+import json
+import os
 import logging
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
-from datetime import datetime, timezone
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score, classification_report
 
@@ -40,6 +42,32 @@ from data_pipeline import generate_synthetic_data, DynamicProfileResolver
 from feature_cross_pollination import build_pipeline, save_artifacts
 
 log = logging.getLogger("aegis")
+
+
+def log_model_metadata(version: str, auc_roc: float, status: str):
+    """Ավտոմատ կերպով գրանցում է մոդելի մետատվյալները models_log.json ֆայլում:"""
+    log_file = "models_log.json"
+    
+    new_log = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "version": version,
+        "auc_roc": round(auc_roc, 4),
+        "status": status
+    }
+    
+    if os.path.exists(log_file):
+        with open(log_file, "r", encoding="utf-8") as f:
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError:
+                data = []
+    else:
+        data = []
+        
+    data.append(new_log)
+    
+    with open(log_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
 
 def run_training_pipeline() -> None:
@@ -110,5 +138,14 @@ def run_training_pipeline() -> None:
         training_features=X,
     )
 
+    # ── Step 6: Model Tracking (Մեր ավտոմատ JSON լոգը) ────────────────────────
+    log.info("  Logging model tracking metrics to models_log.json...")
+    log_model_metadata(version="v3.2.0", auc_roc=auc, status="Pipeline retrained successfully")
+
     log.info("  [OFFLINE] Training pipeline complete.")
     log.info("=" * 70)
+
+if __name__ == "__main__":
+    # Настраиваем базовый логгер, чтобы видеть инфо-сообщения в терминале
+    logging.basicConfig(level=logging.INFO)
+    run_training_pipeline()
