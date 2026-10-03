@@ -1,0 +1,11 @@
+# Upload allow-list for Cloud Build (gitignore syntax). Use with:
+#   gcloud builds submit --config coinstats_intel/cloudbuild.yaml --ignore-file coinstats_intel/.gcloudignore .
+/*
+!/coinstats_intel/
+!/data/
+/data/*
+!/data/coinstats_manual_portfolios_holdings.csv
+/coinstats_intel/artifacts/
+/coinstats_intel/GUIDE.hy.md
+__pycache__/
+.pytest_cache/

@@ -1,0 +1,16 @@
+[theme]
+# Light theme pinned for the executive demo: chart colours were validated
+# against this surface (#ffffff).
+base = "light"
+primaryColor = "#2a78d6"
+
+[server]
+headless = true
+
+[client]
+# Hide Streamlit's developer menu and its "Deploy" button: the button offers a public
+# Community Cloud deploy, which the dataset licence does not allow.
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

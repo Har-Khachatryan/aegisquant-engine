@@ -1,0 +1,10 @@
+# CoinStats Portfolio Intelligence — runtime dependencies (pinned, tested together)
+pandas==3.0.3
+numpy==2.4.6
+scipy==1.17.1
+scikit-learn==1.9.0
+fastapi==0.139.0
+uvicorn==0.49.0
+pydantic==2.13.4
+streamlit==1.58.0
+plotly==5.24.1

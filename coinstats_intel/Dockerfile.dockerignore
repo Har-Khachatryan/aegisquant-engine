@@ -1,0 +1,9 @@
+# Allow-list for `docker build -f coinstats_intel/Dockerfile .` (context = repo root).
+# Everything is excluded except this package and the one CSV the image needs.
+*
+!coinstats_intel/
+coinstats_intel/artifacts/
+coinstats_intel/**/__pycache__/
+coinstats_intel/.pytest_cache/
+coinstats_intel/GUIDE.hy.md
+!data/coinstats_manual_portfolios_holdings.csv

@@ -1,0 +1,57 @@
+# Build once, deploy twice to Cloud Run: the REST API and the executive dashboard.
+# Both services are PRIVATE (--no-allow-unauthenticated): the dataset is licensed
+# for academic use only and must not be exposed on a public URL.
+#
+# Run from the repo root:
+#   gcloud builds submit --config coinstats_intel/cloudbuild.yaml \
+#       --ignore-file coinstats_intel/.gcloudignore .
+#
+# One-time setup is in coinstats_intel/README.md ("Deploy to Google Cloud Run").
+
+substitutions:
+  _REGION: europe-west1
+  _REPO: coinstats-intel
+  _IMAGE: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/coinstats-intel
+  # Runtime identity with NO project roles: the apps only read files baked into the image.
+  _RUNTIME_SA: coinstats-runtime@${PROJECT_ID}.iam.gserviceaccount.com
+
+options:
+  dynamicSubstitutions: true
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    env: ["DOCKER_BUILDKIT=1"]
+    args: ["build", "-f", "coinstats_intel/Dockerfile",
+           "-t", "${_IMAGE}:${BUILD_ID}", "-t", "${_IMAGE}:latest", "."]
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: ["push", "--all-tags", "${_IMAGE}"]
+
+  - id: deploy-api
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    waitFor: ["push"]
+    args: ["run", "deploy", "coinstats-intel-api",
+           "--image=${_IMAGE}:${BUILD_ID}", "--region=${_REGION}",
+           "--set-env-vars=SERVICE=api",
+           "--service-account=${_RUNTIME_SA}",
+           "--no-allow-unauthenticated",
+           "--cpu=1", "--memory=1Gi", "--concurrency=40",
+           "--min-instances=0", "--max-instances=3"]
+
+  - id: deploy-dashboard
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    waitFor: ["push"]
+    args: ["run", "deploy", "coinstats-intel-dashboard",
+           "--image=${_IMAGE}:${BUILD_ID}", "--region=${_REGION}",
+           "--set-env-vars=SERVICE=dashboard",
+           "--service-account=${_RUNTIME_SA}",
+           "--no-allow-unauthenticated",
+           "--cpu=1", "--memory=2Gi",
+           "--session-affinity",          # keep each Streamlit websocket on one instance
+           "--timeout=3600",              # long-lived websocket sessions
+           "--min-instances=0", "--max-instances=2"]
