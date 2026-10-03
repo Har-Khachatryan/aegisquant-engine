@@ -5,4 +5,5 @@
 !*.py
 !requirements.txt
 !.streamlit/
+!reports/
 !data/Churn_Modelling.csv

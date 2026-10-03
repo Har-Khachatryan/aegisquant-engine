@@ -73,7 +73,27 @@ CHURN_FEATURES: list[str] = [
     "balance_to_salary",
     "zero_balance",
     "tenure_to_age",
+    "products_one",
+    "products_many",
+    "inactive_senior",
+    "age_x_active",
+    "germany_balance",
+    "credit_per_age",
 ]
+
+# Explanations are reported per business concept: the SHAP values of a raw input
+# and the features engineered from it are summed (SHAP values are additive).
+FEATURE_GROUPS: dict[str, list[str]] = {
+    "num_products":     ["num_products", "products_one", "products_many"],
+    "age":              ["age"],
+    "is_active_member": ["is_active_member", "inactive_senior", "age_x_active"],
+    "geography":        ["geo_germany", "geo_spain", "germany_balance"],
+    "balance":          ["balance", "zero_balance", "balance_to_salary"],
+    "credit_score":     ["credit_score", "credit_per_age"],
+    "tenure":           ["tenure", "tenure_to_age"],
+    "estimated_salary": ["estimated_salary"],
+    "has_cr_card":      ["has_cr_card"],
+}
 
 # Columns a caller must supply (everything else is derived in data_pipeline.engineer_features)
 INPUT_FEATURES: list[str] = [
@@ -88,6 +108,19 @@ N_CLUSTERS: int = 3
 # that are both intuitive and visible in the data are constrained: active members
 # churn less (14 % vs 27 %). Age and product count are clearly non-monotonic.
 MONOTONE_CONSTRAINTS: dict[str, int] = {"is_active_member": -1}
+
+# XGBoost hyperparameters: best of a 30-trial random search scored by 5-fold CV
+# AUC on the training split only (reproduce with `python benchmark.py --search`).
+XGB_PARAMS: dict = {
+    "max_depth": 3,
+    "learning_rate": 0.0184,
+    "min_child_weight": 1.24,
+    "subsample": 0.89,
+    "colsample_bytree": 0.54,
+    "reg_lambda": 0.81,
+    "n_estimators": 2_000,          # upper bound — early stopping picks the actual count
+    "early_stopping_rounds": 60,
+}
 
 # ── Decision policy ───────────────────────────────────────────────────────────
 # Fallback only: training picks the F1-optimal threshold on out-of-fold
@@ -178,24 +211,18 @@ class ClientFeatures(BaseModel):
     }
 
 
-# ── Human-readable feature labels (SHAP risk drivers) ─────────────────────────
-FEATURE_LABELS: dict[str, str] = {
-    "credit_score":      "Credit score",
-    "age":               "Age",
-    "tenure":            "Tenure (years)",
-    "balance":           "Balance",
-    "num_products":      "Products held",
-    "has_cr_card":       "Has credit card",
-    "is_active_member":  "Active member",
-    "estimated_salary":  "Estimated salary",
-    "geo_germany":       "Market: Germany",
-    "geo_spain":         "Market: Spain",
-    "balance_to_salary": "Balance / salary",
-    "zero_balance":      "Zero balance",
-    "tenure_to_age":     "Tenure / age",
-    "cluster_0":         "Segment 0",
-    "cluster_1":         "Segment 1",
-    "cluster_2":         "Segment 2",
+# ── Human-readable labels for the explanation groups ──────────────────────────
+GROUP_LABELS: dict[str, str] = {
+    "num_products":     "Products held",
+    "age":              "Age",
+    "is_active_member": "Active member",
+    "geography":        "Market",
+    "balance":          "Balance",
+    "credit_score":     "Credit score",
+    "tenure":           "Tenure",
+    "estimated_salary": "Salary",
+    "has_cr_card":      "Credit card",
+    "segment":          "Life-stage segment",
 }
 
 # ── Demo customers for the dashboard (hand-written, not rows of the dataset) ──

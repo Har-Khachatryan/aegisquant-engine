@@ -50,6 +50,7 @@ from config import (
     CHURN_FEATURES,
     CLUSTER_FEATURES,
     EVALUATION_PATH,
+    FEATURE_GROUPS,
     HOLDOUT_PATH,
     MONOTONE_CONSTRAINTS,
     N_CLUSTERS,
@@ -58,12 +59,26 @@ from config import (
     RANDOM_STATE,
     REFERENCE_DATA_PATH,
     XGB_MODEL_PATH,
+    XGB_PARAMS,
 )
 
 log = logging.getLogger("aegis")
 
 CLUSTER_COLUMNS: list[str] = [f"cluster_{i}" for i in range(N_CLUSTERS)]
 OUTPUT_FEATURES: list[str] = CHURN_FEATURES + CLUSTER_COLUMNS
+
+
+def group_contributions(values: np.ndarray, feature_names: list[str]) -> pd.DataFrame:
+    """
+    Sum per-feature SHAP values into business concepts (config.FEATURE_GROUPS);
+    the one-hot cluster columns become "segment". Valid because SHAP values are
+    additive: the grouped values still add up to the model margin.
+    """
+    values = np.atleast_2d(values)
+    index = {name: i for i, name in enumerate(feature_names)}
+    groups = {g: [index[f] for f in members] for g, members in FEATURE_GROUPS.items()}
+    groups["segment"] = [index[c] for c in CLUSTER_COLUMNS]
+    return pd.DataFrame({g: values[:, cols].sum(axis=1) for g, cols in groups.items()})
 
 
 def _one_hot(cluster_ids: np.ndarray) -> np.ndarray:
@@ -128,15 +143,8 @@ def build_pipeline() -> Pipeline:
     """Assemble the cross-pollination training pipeline (training only)."""
     constraints = tuple(MONOTONE_CONSTRAINTS.get(f, 0) for f in OUTPUT_FEATURES)
     xgb = XGBWithValidation(
-        max_depth=4,
-        learning_rate=0.03,
-        n_estimators=600,
-        subsample=0.85,
-        colsample_bytree=0.85,
-        min_child_weight=5,
-        reg_lambda=1.5,
+        **XGB_PARAMS,
         eval_metric="logloss",
-        early_stopping_rounds=40,
         random_state=RANDOM_STATE,
         verbosity=0,
         monotone_constraints=constraints,

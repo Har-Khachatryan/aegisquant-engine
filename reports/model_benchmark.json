@@ -1,0 +1,87 @@
+{
+  "protocol": "5-fold stratified CV on the 8,000-customer training split",
+  "results": [
+    {
+      "model": "Logistic regression",
+      "features": 19,
+      "aegisquant": false,
+      "cv_auc": 0.835,
+      "cv_auc_std": 0.0094,
+      "cv_pr_auc": 0.6567,
+      "seconds": 0.1
+    },
+    {
+      "model": "Random forest",
+      "features": 19,
+      "aegisquant": false,
+      "cv_auc": 0.8595,
+      "cv_auc_std": 0.0089,
+      "cv_pr_auc": 0.6901,
+      "seconds": 2.9
+    },
+    {
+      "model": "HistGradientBoosting",
+      "features": 19,
+      "aegisquant": false,
+      "cv_auc": 0.8562,
+      "cv_auc_std": 0.0094,
+      "cv_pr_auc": 0.6929,
+      "seconds": 4.3
+    },
+    {
+      "model": "XGBoost \u2014 v3.2 settings, base features",
+      "features": 13,
+      "aegisquant": false,
+      "cv_auc": 0.8591,
+      "cv_auc_std": 0.0069,
+      "cv_pr_auc": 0.6937,
+      "seconds": 0.8
+    },
+    {
+      "model": "XGBoost \u2014 v3.2 settings, + engineered features",
+      "features": 19,
+      "aegisquant": false,
+      "cv_auc": 0.8625,
+      "cv_auc_std": 0.0074,
+      "cv_pr_auc": 0.699,
+      "seconds": 0.8
+    },
+    {
+      "model": "LightGBM",
+      "features": 19,
+      "aegisquant": false,
+      "cv_auc": 0.8617,
+      "cv_auc_std": 0.0084,
+      "cv_pr_auc": 0.699,
+      "seconds": 1.6
+    },
+    {
+      "model": "CatBoost",
+      "features": 19,
+      "aegisquant": false,
+      "cv_auc": 0.8566,
+      "cv_auc_std": 0.0091,
+      "cv_pr_auc": 0.6925,
+      "seconds": 12.5
+    },
+    {
+      "model": "AegisQuant \u2014 tuned XGBoost + segments",
+      "features": 22,
+      "aegisquant": true,
+      "cv_auc": 0.8623,
+      "cv_auc_std": 0.0067,
+      "cv_pr_auc": 0.7007,
+      "seconds": 1.9
+    }
+  ],
+  "xgb_params": {
+    "max_depth": 3,
+    "learning_rate": 0.0184,
+    "min_child_weight": 1.24,
+    "subsample": 0.89,
+    "colsample_bytree": 0.54,
+    "reg_lambda": 0.81,
+    "n_estimators": 2000,
+    "early_stopping_rounds": 60
+  }
+}

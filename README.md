@@ -1,222 +1,201 @@
-# AegisQuant v4.0 — AI Portfolio Shield & Risk Engine
+<div align="center">
 
-**Churn prediction with per-customer explanations, KMeans investor segmentation and a churn-adjusted
-Markowitz retention portfolio — now trained and evaluated on real bank-customer data.**
+# 🛡️ AegisQuant
 
-![Customer risk & retention tab](docs/dashboard_customer.png)
+**Churn risk & retention engine for retail banking** — predicts which customers are about to leave,
+explains why in plain language, and proposes a risk-adjusted investment offer to keep them.
 
-AegisQuant scores how likely a bank customer is to leave, explains *why* in plain language (local SHAP),
-maps the customer to an investor profile, and — when the risk crosses a learned threshold — proposes a
-personalised, risk-adjusted investment allocation as a retention offer. Higher churn risk makes the
-proposed portfolio calmer: customers in distress are not offered volatility.
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![XGBoost](https://img.shields.io/badge/XGBoost-3.2-189fdd)
+![SHAP](https://img.shields.io/badge/explainability-SHAP-ff0d57)
+![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white)
+![Streamlit](https://img.shields.io/badge/UI-Streamlit-FF4B4B?logo=streamlit&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-31%20passed-2ea44f)
 
-## Results (hold-out set, 2,000 customers never seen in training)
+</div>
 
-| Metric | AegisQuant (XGBoost) | Logistic-regression baseline |
-|---|---|---|
-| ROC-AUC | **0.862** | 0.765 |
-| PR-AUC (random = 0.204) | **0.709** | 0.471 |
-| Recall / precision at the chosen threshold (0.32) | **62 % / 63 %** | 62 % / 40 % |
-| Churners found in the riskiest 20 % of customers | **61 %** | 47 % |
-| Brier score (lower is better; constant = 0.162) | **0.101** | — |
+![Customer tab](docs/dashboard_customer.png)
 
-- 5-fold cross-validated AUC on the training split is **0.861** — matching the hold-out score, so the
-  model is not overfitting.
-- Predictions are **calibrated**: customers scored 40–50 % churn 46 % of the time.
-- The gain over the baseline comes from non-linear effects a linear model cannot express: churn peaks
-  in the 50s (56 %) and jumps to 83–100 % for customers holding 3–4 products.
+## Results
 
-**Segments** (KMeans on age, balance, salary → investor profile by risk capacity):
+Measured once on **2,000 customers the model never saw** (Kaggle *Churn Modelling*, 10,000 bank customers).
 
-| Profile | Customers | Churn rate | Avg age | Avg balance |
-|---|---|---|---|---|
-| Conservative | 16 % | **46 %** | 57 | €91K |
-| Balanced | 34 % | 12 % | 36 | €2K (95 % zero balance) |
-| Aggressive | 50 % | 17 % | 35 | €123K |
-
-**Fairness:** gender is *not* a model input. On the hold-out set the model catches 61 % of female and
-63 % of male churners (equal-opportunity check), with ROC-AUC 0.867 vs 0.857.
-
-![Model performance tab](docs/dashboard_model.png)
-
-## Dataset
-
-[Kaggle "Churn Modelling"](https://www.kaggle.com/datasets/shrutimechlearn/churn-modelling) —
-10,000 customers of a European bank (France, Germany, Spain), 20.4 % of whom left (`Exited = 1`).
-Stored at `data/Churn_Modelling.csv`; it is a public dataset — check its Kaggle page for licence terms
-before reusing it elsewhere.
-
-| Column | Use |
+| | |
 |---|---|
-| CreditScore, Age, Tenure, Balance, NumOfProducts, HasCrCard, IsActiveMember, EstimatedSalary, Geography | model inputs |
-| Gender | **fairness audit only** — deliberately excluded from the model |
-| Exited | target |
-| RowNumber, CustomerId, Surname | identifiers — dropped (CustomerId is kept only to look customers up) |
+| **ROC-AUC** | **0.865** (5-fold CV on training data: 0.862 — no overfitting) |
+| **Churners caught · offer hit-rate** | **61 % · 68 %** at the learned threshold |
+| **Riskiest 20 % of customers** | contain **63 % of all churners** — 3.1× a random call list |
+| **Calibration** | scores are honest probabilities: customers scored 55 % left 59 % of the time |
+| **Fairness** | gender is not a model input; churners caught: 60 % of women, 61 % of men |
 
-`load_churn_dataset()` validates the schema and fails loudly on missing values, duplicate customers or
-unknown markets instead of silently imputing.
+<sub>Multithreaded XGBoost makes scores vary by about ±0.002 across platforms (the Docker build on Linux
+reports ROC-AUC 0.863).</sub>
 
-## What changed in v4.0
+## Business impact
 
-| Area | v3.2 | v4.0 |
+Rank customers by risk, call the top of the list. With a budget for 20 % of the bank, AegisQuant reaches
+**1,281 of ~2,037 leavers** where a random list reaches 407. The dashboard lets you drag the budget and
+see the trade-off live.
+
+![Business impact tab](docs/business_impact.png)
+
+## Is this the best model the data allows?
+
+Eight approaches, same training data, same folds (`python benchmark.py`):
+
+| Model | 5-fold CV ROC-AUC | CV PR-AUC |
 |---|---|---|
-| Data | Synthetic generator; the label was a known formula of its own features | Real Kaggle bank data with a real churn label |
-| Evaluation | Fitted on **all** rows, then scored on a subset of them (in-sample AUC 0.87) | Stratified 80/20 split; test set used once; CV for model selection |
-| Decision threshold | Fixed 0.50 | F1-optimal on out-of-fold predictions (0.32) |
-| Serialisation | Said "no pickle" but still wrote a pipeline pickle + 2 joblib files | JSON and CSV only (booster, centroids, profile map, metadata) |
-| Explanations | SHAP top-2 by name | SHAP drivers with the customer's own values and dataset context |
-| Inference code | Duplicated in `api.py` and `optimizer.py` | One shared `ChurnPredictor` (`inference.py`) |
-| Optimiser bounds | From synthetic crypto/tech ratios | From the KMeans investor profile; defensive core (SPY, BND, GLD, KO) |
-| Quality checks | Manual `requests` script | 30 pytest tests (data, model, SHAP, optimiser, API, drift, dashboard) |
-| Docker | `python:3.10` (incompatible with pandas 3) | `python:3.12-slim`, model trained at build, non-root user |
+| **AegisQuant — tuned XGBoost + engineered features + segments** | 0.862 ± 0.007 | **0.701** |
+| XGBoost, v3.2 settings + engineered features | 0.863 ± 0.007 | 0.699 |
+| LightGBM | 0.862 ± 0.008 | 0.699 |
+| Random forest | 0.860 ± 0.009 | 0.690 |
+| XGBoost, v3.2 settings, base features | 0.859 ± 0.007 | 0.694 |
+| CatBoost | 0.857 ± 0.009 | 0.693 |
+| HistGradientBoosting | 0.856 ± 0.009 | 0.693 |
+| Logistic regression (same engineered features) | 0.835 ± 0.009 | 0.657 |
 
-## Architecture
+Every gradient-boosted model converges at **≈ 0.86 — the information ceiling of these ten inputs**
+(scores far above it on this dataset usually come from leakage, e.g. oversampling before the split).
+AegisQuant sits at that ceiling with the best PR-AUC and the most stable folds, while keeping exact SHAP
+explanations and pickle-free JSON serving. Feature engineering is where the signal is: on the hold-out set
+it lifts plain logistic regression from 0.765 to 0.834.
+
+![Model quality tab](docs/model_quality.png)
+
+## How it works
 
 ```mermaid
 flowchart LR
-    CSV[(Churn_Modelling.csv)] --> DP[data_pipeline.py<br/>validate · engineer features]
-    DP --> TR[churn_model.py<br/>split · CV · fit · evaluate]
-    TR --> ART[(artifacts/<br/>JSON + CSV)]
-    ART --> INF[inference.py<br/>ChurnPredictor + SHAP]
-    INF --> API[api.py · FastAPI]
-    INF --> OPT[optimizer.py<br/>Markowitz + market worker]
-    OPT --> UI[app.py · Streamlit]
-    ART --> DM[DriftMonitor.py<br/>KS test]
-    DM --> RT[monitor_and_retrain.py]
-    RT --> TR
+    CSV[(Churn_Modelling.csv)] --> FE[Feature engineering<br/>19 features]
+    FE --> KM[KMeans life-stage<br/>segments]
+    KM --> XGB[Tuned XGBoost]
+    FE --> XGB
+    XGB --> SHAP[SHAP drivers<br/>per customer]
+    XGB --> DEC{risk ≥ threshold?}
+    KM --> PROF[Investor profile]
+    DEC -->|yes| MKW[Churn-adjusted<br/>Markowitz offer]
+    PROF --> MKW
+    XGB --> API[FastAPI]
+    XGB --> UI[Streamlit]
+    FE --> DRIFT[KS drift monitor] --> RETRAIN[Auto-retrain]
 ```
 
-| File | Role |
-|---|---|
-| `config.py` | Paths, feature lists, hyperparameters, asset universe, `ClientFeatures` contract |
-| `data_pipeline.py` | Loading/validation, feature engineering (shared by training and serving), `DynamicProfileResolver` |
-| `feature_cross_pollination.py` | `ClusterInjector` (KMeans → one-hot), `XGBWithValidation`, pickle-free `ProcessorBundle`, artifact I/O |
-| `churn_model.py` | Training & evaluation protocol, reports, `models_log.json` |
-| `inference.py` | `ChurnPredictor`: probability, risk tier, profile, local SHAP drivers |
-| `optimizer.py` | `AegisQuantEngine`: yfinance worker, Ledoit-Wolf covariance, churn-scaled SLSQP Markowitz |
-| `api.py` | REST API |
-| `app.py` | Dashboard |
-| `DriftMonitor.py`, `monitor_and_retrain.py` | Drift detection and scheduled retraining |
-| `tests/` | 30 tests |
+- **Features** — raw bank fields plus six engineered signals that each raised cross-validated AUC: single
+  vs. 3–4 products, inactive 45+ (67 % churn), age × activity, market × balance, credit score per year of
+  age, balance/salary and tenure/age.
+- **Segments** — KMeans on age, balance and salary; each segment maps to a conservative / balanced /
+  aggressive investor profile by risk capacity, derived from the centroids so it survives retraining.
+- **Model** — XGBoost tuned by a 30-trial random search on CV, early stopping, one monotonic constraint
+  (active members churn less). Decision threshold: F1-optimal on out-of-fold predictions.
+- **Explanations** — exact TreeSHAP values, summed per business concept ("Products held", "Active
+  member", …) and phrased with the customer's own values and the relevant churn base rate.
+- **Retention offer** — mean-variance optimisation on ten assets (Ledoit-Wolf covariance from yfinance)
+  with profile caps on tech and crypto; risk aversion rises with churn risk, so a distressed customer is
+  offered a calmer portfolio.
+- **MLOps** — leak-free protocol (test set used once), JSON-only artifacts, KS drift monitor with an
+  automatic retraining trigger, 31 tests, Docker image trained at build time.
 
-## Quick start (Windows / PowerShell)
+## Quick start
 
-```powershell
+```bash
 git clone https://github.com/Har-Khachatryan/aegisquant-engine.git
 cd aegisquant-engine
-python -m venv aegis_env
-aegis_env\Scripts\activate          # Linux/macOS: source aegis_env/bin/activate
+python -m venv aegis_env && aegis_env\Scripts\activate    # macOS/Linux: source aegis_env/bin/activate
 pip install -r requirements-dev.txt
 
-python churn_model.py               # train + evaluate (~30 s); artifacts → artifacts/
-streamlit run app.py                # dashboard → http://localhost:8501
-uvicorn api:app --port 8000         # API → http://localhost:8000/docs
-python -m pytest -q                 # 30 tests
+python churn_model.py          # train + evaluate (~30 s) → artifacts/
+streamlit run app.py           # dashboard → http://localhost:8501
+uvicorn api:app --port 8000    # REST API → http://localhost:8000/docs
+python -m pytest -q            # 31 tests
 ```
 
-The dashboard and API train automatically on first start if `artifacts/` is missing. Set
-`AEGIS_OFFLINE=1` to run the dashboard without internet (the portfolio then uses a clearly labelled
-synthetic covariance instead of yfinance data).
+The app trains itself on first start if `artifacts/` is missing. `AEGIS_OFFLINE=1` runs the dashboard
+without internet (the offer then uses a clearly labelled synthetic covariance).
+
+```bash
+docker build -t aegisquant .
+docker run -p 8000:8080 aegisquant                        # API
+docker run -p 8501:8080 -e SERVICE=dashboard aegisquant   # dashboard
+```
 
 ## API
 
-| Method | Path | Returns |
-|---|---|---|
-| `GET` | `/` | redirect to `/docs` |
-| `GET` | `/health` | status, model version, test AUC, decision threshold |
-| `GET` | `/model-card` | training metadata, hold-out metrics, fairness audit, segments |
-| `POST` | `/predict` | churn probability, risk tier, retention decision, investor profile, SHAP drivers |
+`POST /predict`
 
 ```json
-POST /predict
-{
-  "credit_score": 619, "geography": "Germany", "age": 52, "tenure": 2,
-  "balance": 118000, "num_products": 3, "has_cr_card": true,
-  "is_active_member": false, "estimated_salary": 101348.88
-}
+{"credit_score": 619, "geography": "Germany", "age": 52, "tenure": 2, "balance": 118000,
+ "num_products": 3, "has_cr_card": true, "is_active_member": false, "estimated_salary": 101348.88}
 ```
 
 ```json
 {
-  "churn_probability": 0.9839,
+  "churn_probability": 0.9836,
   "risk_tier": "High",
   "retention_action": true,
-  "decision_threshold": 0.32,
+  "decision_threshold": 0.35,
   "investor_profile": "conservative",
-  "segment_id": 1,
   "risk_drivers": [
     "Products held: 3 — raises churn risk (customers with 3–4 products churn 83–100 %)",
     "Age: 52 — raises churn risk (churn peaks between 45 and 60, reaching 56 % in the 50s)"
   ],
-  "drivers": [{"feature": "num_products", "value": 3.0, "contribution": 2.9181, "...": "..."}],
-  "base_value": -1.3715,
+  "drivers": [{"feature": "num_products", "value": "3", "contribution": 2.7303, "...": "..."}],
   "model_version": "aegis_quant_v4.0 (trained 2026-10-03)"
 }
 ```
 
-Invalid input (e.g. `credit_score: 100`, `geography: "Italy"`, `num_products: 5`) returns **422**.
+Also: `GET /health`, `GET /model-card` (metrics, fairness audit, segments). Invalid input returns `422`.
 
-## Methodology
+## Project structure
 
-**Features.** Raw inputs plus engineered `geo_germany`, `geo_spain` (France = baseline),
-`balance_to_salary`, `zero_balance` (36 % of customers hold no balance) and `tenure_to_age` (loyalty
-relative to adult life). `engineer_features()` is the single implementation used by training, the API
-and the dashboard; a test asserts the serving path reproduces the training matrix exactly.
+| File | Role |
+|---|---|
+| `config.py` | Paths, features, tuned hyperparameters, asset universe, `ClientFeatures` contract |
+| `data_pipeline.py` | Validated loading, feature engineering (shared by training and serving), profile resolver |
+| `feature_cross_pollination.py` | KMeans → XGBoost pipeline, pickle-free serving bundle, SHAP grouping |
+| `churn_model.py` | Training & evaluation protocol |
+| `benchmark.py` | Reproducible model comparison and hyperparameter search |
+| `inference.py` | `ChurnPredictor`: probability, risk tier, profile, explanations |
+| `optimizer.py` | Market-data worker and churn-adjusted Markowitz optimiser |
+| `api.py` · `app.py` | FastAPI service · Streamlit dashboard |
+| `DriftMonitor.py` · `monitor_and_retrain.py` | Drift detection · scheduled retraining |
+| `tests/` | 31 tests: data, train/serve parity, model quality, SHAP additivity, optimiser, API, dashboard |
 
-**Cross-pollination.** KMeans (k = 3) segments customers on standardised age, balance and salary; the
-one-hot segment is appended to the XGBoost inputs. Segments are labelled by risk capacity
-`z(balance) − z(age)` computed from the centroids, so labels survive retraining.
+## Dataset
 
-**Model.** XGBoost (depth 4, learning rate 0.03, early stopping on an internal 20 % split) with one
-monotonic constraint — active members churn less — where the data clearly supports it; age and product
-count are left unconstrained because their effects are non-monotonic.
+[Kaggle — Churn Modelling](https://www.kaggle.com/datasets/shrutimechlearn/churn-modelling): 10,000
+customers of a European bank (France, Germany, Spain), 20.4 % churned. Included as
+`data/Churn_Modelling.csv`; check the Kaggle page for its licence before reuse. `RowNumber` and `Surname`
+are dropped, `Gender` is kept only for the fairness audit.
 
-**Protocol.** Stratified 80/20 split → 5-fold out-of-fold predictions on the 80 % pick the
-F1-optimal threshold → final fit on the 80 % → one evaluation on the 20 %, against a logistic baseline.
+<details>
+<summary><b>What changed in v4.0</b></summary>
 
-**Explanations.** `shap.TreeExplainer` gives exact per-customer contributions in log-odds (a test checks
-they sum to the model margin). The API returns the top churn-raising drivers with the customer's values.
+| | v3.2 | v4.0 |
+|---|---|---|
+| Data | Synthetic generator | Real Kaggle bank customers |
+| Evaluation | Scored on rows the model had trained on | Stratified 80/20 split, test set used once, CV for every choice |
+| Model | Fixed hyperparameters, 7 synthetic features | Tuned XGBoost, 19 features, learned threshold |
+| Explanations | Top-2 SHAP feature names | Grouped SHAP drivers with values and base rates |
+| Serialisation | Pickle + joblib | JSON / CSV only |
+| Quality | Manual request script | 31 automated tests, model benchmark, fairness audit |
+| Docker | `python:3.10` (incompatible with pandas 3) | `python:3.12-slim`, trained at build, non-root |
 
-**Retention portfolio.** For customers above the threshold:
-`max μᵀw − (γ/2)·wᵀΣw − λ‖w − w₀‖²` with Ledoit-Wolf Σ from one year of yfinance prices.
-γ is the profile's base risk aversion, multiplied by up to *e* as churn probability rises above the
-threshold. Tech and crypto are capped per profile (e.g. conservative ≤ 4 % crypto, ≤ 30 % tech); core
-assets carry a profile minimum weight. Expected returns are trailing averages, not forecasts.
-
-**Drift.** Two-sample KS tests on six numeric features against the training data; two or more drifted
-features (p < 0.01) trigger `monitor_and_retrain.py`, which reads `data/latest_production_data.csv`.
-
-## Docker
-
-```powershell
-docker build -t aegisquant .
-docker run --rm -p 8000:8080 aegisquant                       # API
-docker run --rm -p 8501:8080 -e SERVICE=dashboard aegisquant  # dashboard
-```
-
-The image contains only the engine modules and the Kaggle CSV (`.dockerignore` is an allow-list); the
-model is trained during the build and the container runs as a non-root user.
+</details>
 
 ## Limitations
 
-- One public snapshot from a single bank: no time dimension, so "churn" is a static label and the model
-  cannot use behavioural trends (logins, balance velocity) that v3.x simulated.
-- The threshold optimises F1; a production deployment should optimise expected retention value
-  (offer cost vs customer lifetime value) and validate with an A/B hold-out.
-- Excluding gender keeps it out of decisions but the model under-predicts women's churn on average
-  (22 % predicted vs 25 % actual); correlated features can still act as proxies.
-- The portfolio layer is illustrative: trailing returns and a ten-asset universe, not investment advice.
+- One static snapshot from one bank: no behavioural time series (logins, balance trends), which caps
+  achievable accuracy.
+- The threshold maximises F1; production should optimise retention value (offer cost vs. customer
+  lifetime value) and confirm uplift with an A/B hold-out.
+- Without gender as an input the model slightly under-predicts women's churn (22 % vs 25 % actual);
+  correlated features can still act as proxies.
+- The portfolio layer is illustrative (trailing returns, ten assets) — not investment advice.
 
-## Also in this repository
+---
 
-[`coinstats_intel/`](coinstats_intel/) — a separate project: portfolio-health analytics for CoinStats
-manual crypto portfolios (its dataset is licensed for academic use and is not included).
-
-## Version history
-
-- **v4.0** — real Kaggle bank data, leak-free evaluation protocol, learned threshold, pickle-free
-  artifacts, fairness audit, shared predictor, profile-driven optimiser, 30 tests, fixed Docker image.
-- **v3.2** — local SHAP explanations, native XGBoost JSON, asynchronous market worker, single
-  `ClientFeatures` contract.
-- **v3.1** — unified cross-pollination pipeline, feasibility-repair layer, drift monitor.
-- **v3.0** — initial modular architecture.
+<sub>Also in this repository: [`coinstats_intel/`](coinstats_intel/) — a separate portfolio-health
+analytics project for CoinStats crypto portfolios. · Version history: **v4.0** real data & leak-free
+evaluation · **v3.2** local SHAP, native XGBoost JSON · **v3.1** cross-pollination pipeline · **v3.0** modular
+architecture.</sub>

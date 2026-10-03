@@ -43,10 +43,10 @@ log = logging.getLogger("aegis_api")
 # Response models
 # ═════════════════════════════════════════════════════════════════════════════
 class Driver(BaseModel):
-    feature: str
+    feature: str                 # business concept (a raw input + its engineered features)
     label: str
-    value: float
-    contribution: float          # SHAP value in log-odds; > 0 pushes churn up
+    value: str                   # the customer's own value, formatted
+    contribution: float          # summed SHAP value in log-odds; > 0 pushes churn up
     text: str
 
 

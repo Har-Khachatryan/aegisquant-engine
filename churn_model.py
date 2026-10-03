@@ -63,7 +63,7 @@ from config import (
     XGB_MODEL_PATH,
 )
 from data_pipeline import DynamicProfileResolver, load_churn_dataset, model_matrix, summarise_segments
-from feature_cross_pollination import OUTPUT_FEATURES, build_pipeline, save_artifacts
+from feature_cross_pollination import OUTPUT_FEATURES, build_pipeline, group_contributions, save_artifacts
 
 log = logging.getLogger("aegis")
 
@@ -150,13 +150,12 @@ def _fairness_audit(test: pd.DataFrame, prob: np.ndarray, threshold: float) -> d
 
 
 def _shap_importance(pipeline, X: pd.DataFrame) -> list[dict]:
-    """Mean |SHAP| per transformed feature on the given rows (exact TreeSHAP)."""
+    """Mean |SHAP| per business concept on the given rows (exact TreeSHAP, grouped)."""
     Xt = pipeline.named_steps["cluster_features"].transform(X)
     explainer = shap.TreeExplainer(pipeline.named_steps["xgb_churn"].get_booster())
-    values = np.asarray(explainer.shap_values(Xt))
-    mean_abs = np.abs(values).mean(axis=0)
-    order = np.argsort(-mean_abs)
-    return [{"feature": OUTPUT_FEATURES[i], "mean_abs_shap": round(float(mean_abs[i]), 4)} for i in order]
+    grouped = group_contributions(np.asarray(explainer.shap_values(Xt)), OUTPUT_FEATURES)
+    mean_abs = grouped.abs().mean().sort_values(ascending=False)
+    return [{"feature": g, "mean_abs_shap": round(float(v), 4)} for g, v in mean_abs.items()]
 
 
 def run_training_pipeline() -> dict:

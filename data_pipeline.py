@@ -89,8 +89,16 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
       balance_to_salary       — liquid wealth relative to income
       zero_balance            — 36 % of customers keep no balance at all
       tenure_to_age           — share of adult life spent as a customer (loyalty)
+      products_one            — single-product customers churn 28 % (vs 8 % with two)
+      products_many           — 3–4 products: 83–100 % churn, a product-fit problem
+      inactive_senior         — 45+ and inactive: 67 % of these 1,002 customers churned
+      age_x_active            — lets the age effect differ for active members
+      germany_balance         — market effect scaled by balance (every German customer holds one)
+      credit_per_age          — credit score relative to credit-history length
 
-    Booleans are cast to int so the matrix fed to XGBoost is purely numeric.
+    The extra features were kept because they raised 5-fold CV AUC on the
+    training split (benchmark.py). Booleans are cast to int so the matrix fed to
+    XGBoost is purely numeric.
     """
     out = df.copy()
     for col in ("has_cr_card", "is_active_member"):
@@ -100,6 +108,12 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     out["balance_to_salary"] = out["balance"] / out["estimated_salary"].clip(lower=1.0)
     out["zero_balance"] = (out["balance"] == 0).astype(int)
     out["tenure_to_age"] = out["tenure"] / out["age"]
+    out["products_one"] = (out["num_products"] == 1).astype(int)
+    out["products_many"] = (out["num_products"] >= 3).astype(int)
+    out["inactive_senior"] = ((out["age"] >= 45) & (out["is_active_member"] == 0)).astype(int)
+    out["age_x_active"] = out["age"] * out["is_active_member"]
+    out["germany_balance"] = out["geo_germany"] * out["balance"]
+    out["credit_per_age"] = out["credit_score"] / out["age"]
     return out
 
 

@@ -22,14 +22,24 @@ def evaluation(trained):
 
 
 def test_holdout_quality_and_no_overfitting(meta):
-    assert meta["test_auc"] > 0.83
+    assert meta["test_auc"] > 0.85
     assert abs(meta["cv_auc"] - meta["test_auc"]) < 0.03       # CV estimate ≈ untouched test
     assert 0.1 < meta["decision_threshold"] < 0.9
 
 
 def test_xgboost_beats_logistic_baseline(evaluation):
-    assert evaluation["test"]["roc_auc"] > evaluation["baseline_logistic"]["roc_auc"] + 0.05
+    # The baseline sees the same engineered features, so the margin is the value of non-linearity.
+    assert evaluation["test"]["roc_auc"] > evaluation["baseline_logistic"]["roc_auc"] + 0.01
     assert evaluation["test"]["pr_auc"] > evaluation["baseline_logistic"]["pr_auc"]
+
+
+def test_grouped_explanations_add_up(predictor):
+    from feature_cross_pollination import group_contributions
+    client = ClientFeatures(**DEMO_CLIENTS[0])
+    _, Xt = predictor._transform(client)
+    raw = np.asarray(predictor.explainer.shap_values(Xt))
+    grouped = group_contributions(raw, predictor.feature_names)
+    assert grouped.to_numpy().sum() == pytest.approx(raw.sum(), abs=1e-6)   # every feature counted once
 
 
 def test_test_split_is_disjoint_and_complete(meta):

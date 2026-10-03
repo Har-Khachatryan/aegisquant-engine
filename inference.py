@@ -11,8 +11,9 @@ Per request:
   2. ProcessorBundle → nearest-centroid segment + one-hot (NumPy, no pickle).
   3. XGBoost (native JSON) → churn probability; decision threshold and risk
      tier come from the training metadata.
-  4. shap.TreeExplainer → exact local contributions; the top positive ones are
-     returned as plain-language risk drivers with the customer's own values.
+  4. shap.TreeExplainer → exact local contributions, summed per business
+     concept (a raw input plus the features engineered from it) and returned as
+     plain-language drivers with the customer's own values.
 """
 
 from __future__ import annotations
@@ -22,9 +23,9 @@ import logging
 import numpy as np
 import shap
 
-from config import CHURN_THRESHOLD, FEATURE_LABELS, MODEL_VERSION, RISK_TIER_BOUNDS, ClientFeatures
+from config import CHURN_THRESHOLD, GROUP_LABELS, MODEL_VERSION, PROFILE_RESOLVER_PATH, RISK_TIER_BOUNDS, ClientFeatures
 from data_pipeline import DynamicProfileResolver, client_to_frame
-from feature_cross_pollination import load_artifact_meta, load_processor, load_xgb_model
+from feature_cross_pollination import group_contributions, load_artifact_meta, load_processor, load_xgb_model
 
 log = logging.getLogger("aegis")
 
@@ -34,38 +35,45 @@ def risk_tier(prob: float) -> str:
     return "High" if prob >= high else "Elevated" if prob >= low else "Low"
 
 
-def _format_value(feature: str, value: float) -> str:
-    if feature in {"balance", "estimated_salary"}:
-        return f"€{value:,.0f}"
-    if feature in {"has_cr_card", "is_active_member", "geo_germany", "geo_spain", "zero_balance"} or feature.startswith("cluster_"):
-        return "yes" if value >= 0.5 else "no"
-    if feature in {"balance_to_salary", "tenure_to_age"}:
-        return f"{value:.2f}"
-    return f"{value:.0f}"
+def _display_value(group: str, client: ClientFeatures, profile: str) -> str:
+    return {
+        "num_products": str(client.num_products),
+        "age": str(client.age),
+        "is_active_member": "yes" if client.is_active_member else "no",
+        "geography": client.geography,
+        "balance": f"€{client.balance:,.0f}",
+        "credit_score": str(client.credit_score),
+        "tenure": f"{client.tenure} years",
+        "estimated_salary": f"€{client.estimated_salary:,.0f}",
+        "has_cr_card": "yes" if client.has_cr_card else "no",
+        "segment": profile,
+    }[group]
 
 
-def _context(feature: str, value: float) -> str:
-    """Dataset facts that make a churn-raising driver actionable (Churn_Modelling.csv)."""
-    if feature == "num_products":
-        if value >= 3:
+def _context(group: str, client: ClientFeatures) -> str:
+    """Dataset facts (Churn_Modelling.csv) that make a churn-raising driver actionable."""
+    if group == "num_products":
+        if client.num_products >= 3:
             return "customers with 3–4 products churn 83–100 %"
-        if value <= 1:
+        if client.num_products == 1:
             return "single-product customers churn 28 % vs 8 % with two products"
-    if feature == "is_active_member" and value < 0.5:
+    if group == "is_active_member" and not client.is_active_member:
+        if client.age >= 45:
+            return "inactive customers aged 45+ churn 67 %"
         return "inactive members churn about twice as often (27 % vs 14 %)"
-    if feature == "geo_germany" and value >= 0.5:
+    if group == "geography" and client.geography == "Germany":
         return "German customers churn 32 % vs 16–17 % in France and Spain"
-    if feature == "age" and 45 <= value <= 65:
+    if group == "age" and 45 <= client.age <= 65:
         return "churn peaks between 45 and 60, reaching 56 % in the 50s"
+    if group == "balance" and client.balance > 0:
+        return "customers holding a balance churn 24 % vs 14 % at zero"
     return ""
 
 
-def describe_driver(feature: str, value: float, contribution: float) -> str:
-    label = FEATURE_LABELS.get(feature, feature)
+def describe_driver(group: str, value: str, contribution: float, context: str = "") -> str:
     effect = "raises" if contribution > 0 else "lowers"
-    text = f"{label}: {_format_value(feature, value)} — {effect} churn risk"
-    ctx = _context(feature, value) if contribution > 0 else ""
-    return f"{text} ({ctx})" if ctx else text
+    text = f"{GROUP_LABELS.get(group, group)}: {value} — {effect} churn risk"
+    return f"{text} ({context})" if context and contribution > 0 else text
 
 
 class ChurnPredictor:
@@ -78,7 +86,6 @@ class ChurnPredictor:
         self.xgb_model = load_xgb_model()
         self.booster = self.xgb_model.get_booster()
         self.processor = load_processor()
-        from config import PROFILE_RESOLVER_PATH
         self.profile_resolver = DynamicProfileResolver.load(PROFILE_RESOLVER_PATH)
         self.meta = load_artifact_meta()
         self.threshold = float(self.meta.get("decision_threshold", CHURN_THRESHOLD))
@@ -99,24 +106,24 @@ class ChurnPredictor:
         return self.profile_resolver.resolve(cluster_id), prob
 
     def explain(self, client: ClientFeatures, top_k: int = 5) -> dict:
-        """Full prediction with local SHAP drivers."""
+        """Full prediction with grouped local SHAP drivers (largest effect first)."""
         frame, Xt = self._transform(client)
         cluster_id = int(self.processor.predict_cluster(frame)[0])
+        profile = self.profile_resolver.resolve(cluster_id)
         prob = float(self.xgb_model.predict_proba(Xt)[0, 1])
 
-        shap_vec = np.asarray(self.explainer.shap_values(Xt)).reshape(-1)
-        values = Xt.iloc[0].to_numpy()
-        drivers = [
-            {
-                "feature": name,
-                "label": FEATURE_LABELS.get(name, name),
-                "value": float(val),
-                "contribution": round(float(c), 4),
-                "text": describe_driver(name, float(val), float(c)),
-            }
-            for name, val, c in zip(self.feature_names, values, shap_vec)
-            if not name.startswith("cluster_")      # segment effect is reported as the profile
-        ]
+        grouped = group_contributions(np.asarray(self.explainer.shap_values(Xt)), self.feature_names).iloc[0]
+        drivers = []
+        for group, contribution in grouped.items():
+            value = _display_value(group, client, profile)
+            context = _context(group, client)
+            drivers.append({
+                "feature": group,
+                "label": GROUP_LABELS.get(group, group),
+                "value": value,
+                "contribution": round(float(contribution), 4),
+                "text": describe_driver(group, value, float(contribution), context),
+            })
         drivers.sort(key=lambda d: abs(d["contribution"]), reverse=True)
         raising = [d for d in drivers if d["contribution"] > 0]
         top_two = (raising + [d for d in drivers if d["contribution"] <= 0])[:2]
@@ -126,7 +133,7 @@ class ChurnPredictor:
             "risk_tier": risk_tier(prob),
             "retention_action": prob >= self.threshold,
             "decision_threshold": self.threshold,
-            "investor_profile": self.profile_resolver.resolve(cluster_id),
+            "investor_profile": profile,
             "segment_id": cluster_id,
             "risk_drivers": [d["text"] for d in top_two],
             "drivers": drivers[:top_k],

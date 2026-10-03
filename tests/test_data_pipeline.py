@@ -35,6 +35,9 @@ def test_engineered_features():
     assert X["zero_balance"] == 1 and X["balance_to_salary"] == 0
     assert X["tenure_to_age"] == pytest.approx(0.1)
     assert X["has_cr_card"] == 1 and X["is_active_member"] == 0
+    assert X["products_one"] == 0 and X["products_many"] == 0
+    assert X["inactive_senior"] == 0 and X["age_x_active"] == 0          # 40 and inactive
+    assert X["germany_balance"] == 0 and X["credit_per_age"] == pytest.approx(15.0)
 
 
 def test_serving_features_match_training_features():
