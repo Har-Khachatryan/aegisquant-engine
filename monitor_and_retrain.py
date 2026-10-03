@@ -1,86 +1,69 @@
 """
-AegisQuant – Периодический мониторинг дрейфа и автоматическое переобучение.
-Запускается по расписанию (cron / Task Scheduler) раз в день.
+AegisQuant – Scheduled drift check and automatic retraining.
+Run daily from cron / Windows Task Scheduler:  python monitor_and_retrain.py
+
+v4.0:
+  - The reference is the training split saved by churn_model.py
+    (artifacts/reference_data.csv) — no more synthetic stand-in.
+  - The production batch is read from data/latest_production_data.csv in the
+    same raw format as Churn_Modelling.csv. Without that file the script runs a
+    clearly labelled dry run on a random sample of the dataset.
+  - v3.2 defined load_production_features() twice (the second silently
+    replaced the first); there is now one loader.
+  - Retraining refreshes the reference automatically (churn_model writes it).
 """
 
-import logging
-import joblib
-import pandas as pd
-from DriftMonitor import DriftMonitor
-from churn_model import run_training_pipeline
-from config import ARTIFACT_PATH, CHURN_FEATURES, CLUSTER_FEATURES
+from __future__ import annotations
 
-logging.basicConfig(level=logging.INFO)
+import logging
+
+import pandas as pd
+
+from config import REFERENCE_DATA_PATH, ROOT
+from DriftMonitor import DriftMonitor, results_frame
+
 log = logging.getLogger("aegis_retrain")
 
-# ── 1. Загрузка референсных данных ──────────────────────────────────────────
-#     Обычно референсный датасет — это тренировочная выборка, на которой
-#     обучалась модель. Её можно сохранить при обучении.
-#     Здесь мы для примера загружаем сохранённый файл.
-REFERENCE_DATA_PATH = "reference_data.pkl"
+PRODUCTION_BATCH_PATH = ROOT / "data" / "latest_production_data.csv"
 
-def load_production_features() -> pd.DataFrame:
-    df = pd.read_csv("latest_production_data.csv")
-    return df[CLUSTER_FEATURES + CHURN_FEATURES]
 
-def load_or_create_reference() -> pd.DataFrame:
-    """
-    Загружает референсный датасет из файла.
-    Если файла нет, генерирует синтетические данные и сохраняет их.
-    """
-    try:
-        ref = pd.read_pickle(REFERENCE_DATA_PATH)
-        log.info("Референсные данные загружены из %s", REFERENCE_DATA_PATH)
-    except FileNotFoundError:
-        log.warning("Файл референсных данных не найден, генерирую синтетику.")
-        from data_pipeline import generate_synthetic_data
-        df = generate_synthetic_data(n=3000)
-        ref = df[CLUSTER_FEATURES + CHURN_FEATURES]
-        ref.to_pickle(REFERENCE_DATA_PATH)
-        log.info("Референсные данные сохранены в %s", REFERENCE_DATA_PATH)
-    return ref
-
-# ── 2. Загрузка свежих производственных данных ──────────────────────────────
-def load_production_features() -> pd.DataFrame:
-    """
-    Загружает текущие признаки из продакшена.
-    !!! Реализуйте здесь свою логику получения данных (БД, API, лог-файл).
-    """
-    # Заглушка: генерируем синтетические данные (замените на реальный источник)
-    log.warning("Используется заглушка load_production_features() – замените на реальную загрузку!")
-    from data_pipeline import generate_synthetic_data
-    df = generate_synthetic_data(n=500)
-    return df[CLUSTER_FEATURES + CHURN_FEATURES]
-
-# ── 3. Основной цикл проверки ────────────────────────────────────────────────
-def check_and_retrain():
-    log.info("=" * 60)
-    log.info("Запуск проверки дрейфа данных...")
-
-    # Загружаем референс
-    reference_data = load_or_create_reference()
-
-    # Создаём монитор
-    monitor = DriftMonitor(reference_data=reference_data)
-
-    # Загружаем свежие данные
-    current_batch = load_production_features()
-
-    # Вычисляем дрейф
-    results = monitor.compute_drift(current_batch)
-
-    # Проверяем, нужно ли переобучать
-    if monitor.should_retrain(results):
-        log.warning("Дрейф обнаружен! Запуск переобучения модели AegisQuant...")
+def load_reference() -> pd.DataFrame:
+    """Training features saved by the last training run (trains first if absent)."""
+    if not REFERENCE_DATA_PATH.exists():
+        from churn_model import run_training_pipeline
+        log.warning("Reference data not found — training the model first.")
         run_training_pipeline()
-        # После переобучения обновляем референсный датасет новой тренировочной выборкой
-        from data_pipeline import generate_synthetic_data
-        df = generate_synthetic_data(n=3000)
-        new_ref = df[CLUSTER_FEATURES + CHURN_FEATURES]
-        new_ref.to_pickle(REFERENCE_DATA_PATH)
-        log.info("Референсный датасет обновлён.")
-    else:
-        log.info("Дрейф не обнаружен. Переобучение не требуется.")
+    return pd.read_csv(REFERENCE_DATA_PATH)
+
+
+def load_production_features() -> pd.DataFrame:
+    """Latest production customers in the raw Churn_Modelling format, cleaned the same way."""
+    from data_pipeline import load_churn_dataset, model_matrix
+
+    if PRODUCTION_BATCH_PATH.exists():
+        log.info("Production batch: %s", PRODUCTION_BATCH_PATH)
+        return model_matrix(load_churn_dataset(PRODUCTION_BATCH_PATH))
+    log.warning("No %s — DRY RUN on a random sample of the training dataset.", PRODUCTION_BATCH_PATH.name)
+    return model_matrix(load_churn_dataset().sample(2_000, random_state=7))
+
+
+def check_and_retrain() -> bool:
+    """Returns True if a retrain was triggered."""
+    log.info("=" * 60)
+    log.info("Running data drift check...")
+    monitor = DriftMonitor(reference_data=load_reference())
+    results = monitor.compute_drift(load_production_features())
+    log.info("\n%s", results_frame(results).round(4).to_string(index=False))
+
+    if monitor.should_retrain(results):
+        from churn_model import run_training_pipeline
+        log.warning("Drift detected — retraining AegisQuant (reference data is refreshed by the run).")
+        run_training_pipeline()
+        return True
+    log.info("No drift detected. Retraining not required.")
+    return False
+
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     check_and_retrain()

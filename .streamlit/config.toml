@@ -1,0 +1,14 @@
+[theme]
+# Light theme pinned: chart colours were validated against a white surface.
+base = "light"
+primaryColor = "#2a78d6"
+
+[server]
+headless = true
+
+[client]
+# Hide the developer menu and Streamlit's "Deploy" button in demos.
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

@@ -8,6 +8,8 @@ __pycache__/
 
 # Артефакты моделей и данные
 *.pkl
+artifacts/
+.pytest_cache/
 
 # IDE
 .vscode/

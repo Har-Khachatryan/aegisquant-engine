@@ -1,0 +1,8 @@
+# Allow-list for the AegisQuant image (`docker build -t aegisquant .`): only the
+# engine's modules, its dependency list, the Streamlit theme and the public Kaggle CSV.
+# coinstats_intel/ has its own Dockerfile and ignore file.
+*
+!*.py
+!requirements.txt
+!.streamlit/
+!data/Churn_Modelling.csv

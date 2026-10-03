@@ -1,151 +1,288 @@
 """
-AegisQuant — Offline training pipeline (v3.2)
+AegisQuant — Offline training pipeline (v4.0)
 
-Upgrade v3.1 → v3.2
+Upgrade v3.2 → v4.0
 ────────────────────
-[SECURE & NATIVE SERIALISATION]
-  - run_training_pipeline() no longer calls joblib.dump() on the full sklearn
-    Pipeline.  Instead it delegates to save_artifacts() in
-    feature_cross_pollination.py, which writes:
-      • aegis_xgb.json            — XGBoost native JSON (no pickle)
-      • aegis_processor.joblib    — StandardScaler + KMeans only
-      • aegis_profile_resolver.joblib — DynamicProfileResolver mapping
-      • aegis_artifact_meta.json  — human-readable metadata sidecar
-      • aegis_quant_artifacts.pkl — legacy combined pickle (backward compat)
-      • reference_data.pkl        — training features for DriftMonitor
+[EVALUATION LEAK FIXED]
+  v3.2 fitted the pipeline on ALL rows and then reported AUC on a 20 % split of
+  those same rows, so the "held-out" AUC was measured on training data. v4.0
+  uses a strict protocol:
 
-  The evaluation split is kept strictly separate from the pipeline.fit() call:
-  pipeline.fit() uses all 3,000 samples (XGBWithValidation carves its own
-  internal 80/20 split for early stopping), while the metrics block below uses
-  a second independent 80/20 split purely for reporting — no data leakage.
+    1. Stratified 80/20 split. The 20 % test set is touched exactly once, at
+       the end, for the reported metrics.
+    2. 5-fold out-of-fold predictions on the 80 % → cross-validated AUC and the
+       F1-optimal decision threshold (chosen without seeing the test set).
+    3. Final pipeline fitted on the 80 % (XGBWithValidation carves its own
+       early-stopping split inside it).
+    4. Test-set report: ROC-AUC, PR-AUC, Brier score, precision/recall/F1 at
+       the chosen threshold, capture rate of the riskiest 10 % / 20 %, a
+       logistic-regression baseline, SHAP global importance and a fairness
+       audit by gender (not a model input) and geography.
+
+Run:  python churn_model.py
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
-import os
 import logging
+import os
 from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score, classification_report
+import shap
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    average_precision_score,
+    brier_score_loss,
+    confusion_matrix,
+    f1_score,
+    precision_recall_curve,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+    roc_curve,
+)
+from sklearn.model_selection import StratifiedKFold, cross_val_predict, train_test_split
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 from config import (
-    CHURN_THRESHOLD,
-    CLUSTER_FEATURES,
+    ARTIFACT_META_PATH,
     CHURN_FEATURES,
-    ALL_FEATURES,
+    CV_FOLDS,
+    DATA_PATH,
+    MODEL_LOG_PATH,
+    MODEL_VERSION,
+    PROCESSOR_PATH,
+    PROFILE_RESOLVER_PATH,
+    RANDOM_STATE,
+    TEST_SIZE,
+    XGB_MODEL_PATH,
 )
-from data_pipeline import generate_synthetic_data, DynamicProfileResolver
-from feature_cross_pollination import build_pipeline, save_artifacts
+from data_pipeline import DynamicProfileResolver, load_churn_dataset, model_matrix, summarise_segments
+from feature_cross_pollination import OUTPUT_FEATURES, build_pipeline, save_artifacts
 
 log = logging.getLogger("aegis")
 
+THRESHOLD_GRID = np.round(np.arange(0.05, 0.951, 0.01), 2)
 
-def log_model_metadata(version: str, auc_roc: float, status: str):
+
+def log_model_metadata(version: str, auc_roc: float, status: str) -> None:
     """Ավտոմատ կերպով գրանցում է մոդելի մետատվյալները models_log.json ֆայլում:"""
-    log_file = "models_log.json"
-    
     new_log = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "version": version,
         "auc_roc": round(auc_roc, 4),
-        "status": status
+        "status": status,
     }
-    
-    if os.path.exists(log_file):
-        with open(log_file, "r", encoding="utf-8") as f:
-            try:
-                data = json.load(f)
-            except json.JSONDecodeError:
-                data = []
-    else:
-        data = []
-        
+    data = []
+    if MODEL_LOG_PATH.exists():
+        try:
+            data = json.loads(MODEL_LOG_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            data = []
     data.append(new_log)
-    
-    with open(log_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    MODEL_LOG_PATH.write_text(json.dumps(data, indent=4, ensure_ascii=False), encoding="utf-8")
 
 
-def run_training_pipeline() -> None:
+def _file_sha256(path) -> str:
+    return hashlib.sha256(open(path, "rb").read()).hexdigest()
+
+
+def _f1_optimal_threshold(y: np.ndarray, prob: np.ndarray) -> tuple[float, float]:
+    scores = [f1_score(y, (prob >= t).astype(int), zero_division=0) for t in THRESHOLD_GRID]
+    best = int(np.argmax(scores))
+    return float(THRESHOLD_GRID[best]), float(scores[best])
+
+
+def _curve(x: np.ndarray, y: np.ndarray, points: int = 120) -> dict:
+    """Down-sample a curve for the dashboard (keeps the end points)."""
+    idx = np.unique(np.linspace(0, len(x) - 1, min(points, len(x))).round().astype(int))
+    return {"x": np.round(x[idx], 4).tolist(), "y": np.round(y[idx], 4).tolist()}
+
+
+def _capture_rate(y: np.ndarray, prob: np.ndarray, top: float) -> float:
+    """Share of all churners found in the `top` fraction of customers ranked by risk."""
+    k = int(round(top * len(prob)))
+    order = np.argsort(-prob)[:k]
+    return float(y[order].sum() / y.sum())
+
+
+def _classification_block(y: np.ndarray, prob: np.ndarray, threshold: float) -> dict:
+    pred = (prob >= threshold).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y, pred, labels=[0, 1]).ravel()
+    return {
+        "roc_auc": round(float(roc_auc_score(y, prob)), 4),
+        "pr_auc": round(float(average_precision_score(y, prob)), 4),
+        "brier": round(float(brier_score_loss(y, prob)), 4),
+        "precision": round(float(precision_score(y, pred, zero_division=0)), 4),
+        "recall": round(float(recall_score(y, pred, zero_division=0)), 4),
+        "f1": round(float(f1_score(y, pred, zero_division=0)), 4),
+        "flagged_share": round(float(pred.mean()), 4),
+        "confusion": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
+        "capture_top10": round(_capture_rate(y, prob, 0.10), 4),
+        "capture_top20": round(_capture_rate(y, prob, 0.20), 4),
+    }
+
+
+def _fairness_audit(test: pd.DataFrame, prob: np.ndarray, threshold: float) -> dict:
+    """Per-group calibration and equal-opportunity check (recall of churners)."""
+    audit = {}
+    frame = test.assign(prob=prob, flagged=(prob >= threshold).astype(int))
+    for col in ("gender", "geography"):
+        rows = []
+        for group, g in frame.groupby(col):
+            churners = g[g["churn"] == 1]
+            rows.append({
+                "group": str(group),
+                "customers": int(len(g)),
+                "actual_churn_rate": round(float(g["churn"].mean()), 4),
+                "mean_predicted": round(float(g["prob"].mean()), 4),
+                "flagged_share": round(float(g["flagged"].mean()), 4),
+                "recall": round(float(churners["flagged"].mean()), 4) if len(churners) else None,
+                "roc_auc": round(float(roc_auc_score(g["churn"], g["prob"])), 4) if g["churn"].nunique() == 2 else None,
+            })
+        audit[col] = rows
+    return audit
+
+
+def _shap_importance(pipeline, X: pd.DataFrame) -> list[dict]:
+    """Mean |SHAP| per transformed feature on the given rows (exact TreeSHAP)."""
+    Xt = pipeline.named_steps["cluster_features"].transform(X)
+    explainer = shap.TreeExplainer(pipeline.named_steps["xgb_churn"].get_booster())
+    values = np.asarray(explainer.shap_values(Xt))
+    mean_abs = np.abs(values).mean(axis=0)
+    order = np.argsort(-mean_abs)
+    return [{"feature": OUTPUT_FEATURES[i], "mean_abs_shap": round(float(mean_abs[i]), 4)} for i in order]
+
+
+def run_training_pipeline() -> dict:
     """
-    Offline training pipeline — safe to call from any module that needs to
-    bootstrap artifacts (optimizer.__init__, api.py lifespan, etc.).
-
-    Stages
-    ──────
-    1. Generate 3,000-sample synthetic investor dataset.
-    2. Build and fit the unified cross-pollination pipeline on all 3,000 samples.
-       (XGBWithValidation internally carves an 80/20 validation split for
-       early stopping; this is separate from the reporting split below.)
-    3. Fit the DynamicProfileResolver to label KMeans clusters as archetypes.
-    4. Evaluate on an independent held-out 20 % split and log metrics.
-    5. Persist all artifacts via save_artifacts() using the v3.2 modular scheme.
+    Train, evaluate and persist the AegisQuant churn engine.
+    Safe to call from any module that needs to bootstrap artifacts.
+    Returns the artifact metadata dict.
     """
     log.info("=" * 70)
-    log.info("AegisQuant v3.2  |  [OFFLINE] Training pipeline — START")
+    log.info(f"AegisQuant {MODEL_VERSION}  |  [OFFLINE] Training pipeline — START")
 
-    # ── Step 1: Synthetic data ────────────────────────────────────────────────
-    df = generate_synthetic_data(n=3_000)
-    X  = df[ALL_FEATURES]
-    y  = df["churn"]
+    # ── 1. Data ───────────────────────────────────────────────────────────────
+    df = load_churn_dataset(DATA_PATH)
+    X = model_matrix(df)
+    y = df["churn"].to_numpy()
 
-    # ── Step 2: Fit unified pipeline on full dataset ──────────────────────────
-    log.info("  [2/4] Fitting cross-pollination pipeline...")
-    pipeline = build_pipeline()
-    pipeline.fit(X, y)
-
-    # ── Step 3: Fit DynamicProfileResolver ───────────────────────────────────
-    log.info("  [3/4] Fitting DynamicProfileResolver...")
-    cluster_injector = pipeline.named_steps["cluster_features"]
-    X_cluster        = df[CLUSTER_FEATURES].copy()
-    scaled           = cluster_injector.scaler.transform(X_cluster)
-    cluster_ids      = cluster_injector.kmeans.predict(scaled)
-
-    df_temp = pd.DataFrame({
-        "cluster_id":       cluster_ids,
-        "avg_holding_days": df["avg_holding_days"].values,
-    })
-    profile_resolver = DynamicProfileResolver()
-    profile_resolver.fit(df_temp)
-
-    # ── Step 4: Evaluation on independent reporting split ────────────────────
-    log.info("  [4/4] Evaluating on held-out 20 % reporting split...")
-    X_tr, X_val, y_tr, y_val = train_test_split(
-        X, y,
-        test_size=0.20,
-        stratify=y,
-        random_state=42,
+    idx_tr, idx_te = train_test_split(
+        np.arange(len(df)), test_size=TEST_SIZE, stratify=y, random_state=RANDOM_STATE
     )
-    y_prob: np.ndarray = pipeline.predict_proba(X_val)[:, 1]
-    y_pred: np.ndarray = (y_prob >= CHURN_THRESHOLD).astype(int)
-    auc: float         = roc_auc_score(y_val, y_prob)
+    X_tr, X_te, y_tr, y_te = X.iloc[idx_tr], X.iloc[idx_te], y[idx_tr], y[idx_te]
+    log.info(f"  [1/5] Split: {len(idx_tr):,} train / {len(idx_te):,} test (stratified)")
 
-    log.info(f"  AegisQuant Cross-Pollination AUC-ROC: {auc:.4f}")
+    # ── 2. Out-of-fold predictions → CV AUC + decision threshold ──────────────
+    cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+    oof = cross_val_predict(build_pipeline(), X_tr, y_tr, cv=cv, method="predict_proba")[:, 1]
+    cv_auc = float(roc_auc_score(y_tr, oof))
+    threshold, oof_f1 = _f1_optimal_threshold(y_tr, oof)
+    log.info(f"  [2/5] {CV_FOLDS}-fold CV AUC = {cv_auc:.4f} | F1-optimal threshold = {threshold:.2f} (OOF F1 {oof_f1:.3f})")
+
+    # ── 3. Final fit on the training split ────────────────────────────────────
+    pipeline = build_pipeline().fit(X_tr, y_tr)
+    injector = pipeline.named_steps["cluster_features"]
+    resolver = DynamicProfileResolver().fit(
+        df.iloc[idx_tr][["age", "balance"]].assign(cluster_id=injector.predict_cluster(X_tr))
+    )
+    log.info("  [3/5] Final pipeline fitted on the training split")
+
+    # ── 4. One-time evaluation on the untouched test split ────────────────────
+    prob_te = pipeline.predict_proba(X_te)[:, 1]
+    test_metrics = _classification_block(y_te, prob_te, threshold)
+
+    baseline = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2_000))
+    baseline.fit(X_tr[CHURN_FEATURES], y_tr)
+    prob_bl = baseline.predict_proba(X_te[CHURN_FEATURES])[:, 1]
+    baseline_metrics = _classification_block(y_te, prob_bl, _f1_optimal_threshold(y_tr, baseline.predict_proba(X_tr[CHURN_FEATURES])[:, 1])[0])
+
+    fpr, tpr, _ = roc_curve(y_te, prob_te)
+    fpr_b, tpr_b, _ = roc_curve(y_te, prob_bl)
+    prec, rec, _ = precision_recall_curve(y_te, prob_te)
+    prec_b, rec_b, _ = precision_recall_curve(y_te, prob_bl)
+    threshold_curve = {
+        "threshold": THRESHOLD_GRID.tolist(),
+        "precision": [round(float(precision_score(y_te, prob_te >= t, zero_division=0)), 4) for t in THRESHOLD_GRID],
+        "recall": [round(float(recall_score(y_te, prob_te >= t, zero_division=0)), 4) for t in THRESHOLD_GRID],
+    }
+    bins = np.linspace(0, 1, 11)
+    which = np.clip(np.digitize(prob_te, bins) - 1, 0, 9)
+    calibration = [
+        {"predicted": round(float(prob_te[which == b].mean()), 4), "actual": round(float(y_te[which == b].mean()), 4),
+         "customers": int((which == b).sum())}
+        for b in range(10) if (which == b).any()
+    ]
     log.info(
-        f"\n{classification_report(y_val, y_pred, target_names=['Retain', 'Churn'])}"
+        f"  [4/5] TEST  AUC {test_metrics['roc_auc']:.4f} | PR-AUC {test_metrics['pr_auc']:.4f} | "
+        f"recall {test_metrics['recall']:.3f} @ precision {test_metrics['precision']:.3f} | "
+        f"baseline AUC {baseline_metrics['roc_auc']:.4f}"
     )
 
-    # ── Step 5: Persist via modular save scheme ───────────────────────────────
-    log.info("  Persisting artifacts (v3.2 modular scheme)...")
-    save_artifacts(
-        pipeline=pipeline,
-        profile_resolver=profile_resolver,
-        val_auc=auc,
-        training_features=X,
-    )
+    test_rows = df.iloc[idx_te]
+    evaluation = {
+        "test": test_metrics,
+        "baseline_logistic": baseline_metrics,
+        "base_churn_rate": round(float(y.mean()), 4),
+        "roc": {"xgb": _curve(fpr, tpr), "baseline": _curve(fpr_b, tpr_b)},
+        "pr": {"xgb": _curve(rec[::-1], prec[::-1]), "baseline": _curve(rec_b[::-1], prec_b[::-1])},
+        "threshold_curve": threshold_curve,
+        "calibration": calibration,
+        "shap_importance": _shap_importance(pipeline, X_te),
+        "fairness": _fairness_audit(test_rows, prob_te, threshold),
+        "segments": summarise_segments(df, injector.predict_cluster(X), resolver),
+    }
 
-    # ── Step 6: Model Tracking (Մեր ավտոմատ JSON լոգը) ────────────────────────
-    log.info("  Logging model tracking metrics to models_log.json...")
-    log_model_metadata(version="v3.2.0", auc_roc=auc, status="Pipeline retrained successfully")
+    cluster_te = injector.predict_cluster(X_te)
+    holdout = pd.DataFrame({
+        "customer_id": test_rows["customer_id"].to_numpy(),
+        "churn": y_te,
+        "probability": np.round(prob_te, 5),
+        "cluster_id": cluster_te,
+        "profile": resolver.transform(pd.DataFrame({"cluster_id": cluster_te})),
+    })
 
-    log.info("  [OFFLINE] Training pipeline complete.")
+    # ── 5. Persist ────────────────────────────────────────────────────────────
+    booster = pipeline.named_steps["xgb_churn"]
+    meta = {
+        "model_version": MODEL_VERSION,
+        "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "data_path": DATA_PATH.name,
+        "data_sha256": _file_sha256(DATA_PATH),
+        "n_train": int(len(idx_tr)),
+        "n_test": int(len(idx_te)),
+        "cv_auc": round(cv_auc, 4),
+        "val_auc": test_metrics["roc_auc"],          # kept for v3.x consumers
+        "test_auc": test_metrics["roc_auc"],
+        "test_pr_auc": test_metrics["pr_auc"],
+        "decision_threshold": threshold,
+        "best_iteration": int(getattr(booster, "best_iteration", -1) or -1),
+        "feature_names": OUTPUT_FEATURES,
+        "n_features": len(OUTPUT_FEATURES),
+        "profile_mapping": {str(k): v for k, v in resolver.cluster_to_profile_.items()},
+    }
+    save_artifacts(pipeline, resolver, meta, evaluation, X_tr, holdout)
+    log_model_metadata(version=MODEL_VERSION, auc_roc=test_metrics["roc_auc"], status="Trained on Churn_Modelling.csv")
+    log.info("  [5/5] Artifacts persisted. Training pipeline complete.")
     log.info("=" * 70)
+    return meta
+
+
+def ensure_trained() -> None:
+    """Train if any artifact is missing or older than the dataset."""
+    paths = [XGB_MODEL_PATH, PROCESSOR_PATH, PROFILE_RESOLVER_PATH, ARTIFACT_META_PATH]
+    stale = not all(p.exists() for p in paths) or min(os.path.getmtime(p) for p in paths) < os.path.getmtime(DATA_PATH)
+    if stale:
+        log.warning("  Artifacts missing or older than the dataset — running training pipeline...")
+        run_training_pipeline()
+
 
 if __name__ == "__main__":
-    # Настраиваем базовый логгер, чтобы видеть инфо-сообщения в терминале
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     run_training_pipeline()

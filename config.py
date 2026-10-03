@@ -2,83 +2,123 @@
 AegisQuant — AI Portfolio Shield & Risk Engine
 Global configuration, hyperparameters, and data contracts.
 
-Upgrade v3.1 → v3.2
+Upgrade v3.2 → v4.0
 ────────────────────
-[DRY / SINGLE SOURCE OF TRUTH]
-  - ClientFeatures (api.py) and ClientPayload (config.py) were two separate
-    Pydantic models describing the same domain object.  Any field-level change
-    had to be applied in two places — a maintenance hazard.
-  - Resolution: both are replaced by the single canonical model ClientFeatures,
-    defined here and imported everywhere else.
-  - ClientFeatures is a strict superset of the old ClientPayload:
-      • All financial bounds preserved (Field ge/le/gt metadata).
-      • @model_validator cross-field check (crypto + tech ≤ 1.0) preserved.
-      • Optional UI-facing fields (client_id, description) carry defaults so
-        the FastAPI endpoint, which does NOT supply them, passes validation
-        without modification.
-  - api.py, optimizer.py, and app.py all import ClientFeatures from config;
-    no other Pydantic model for client data exists in the codebase.
+[REAL DATA]
+  - v3.x trained on a synthetic generator whose churn label was a known
+    logistic formula of its own features. v4.0 trains on the public Kaggle
+    "Churn Modelling" bank dataset (10,000 customers, real `Exited` label).
+  - The feature contract (ClientFeatures) now describes a bank customer instead
+    of synthetic behavioural ratios. Column names are snake_case internally;
+    data_pipeline.COLUMN_MAP translates the Kaggle headers.
 
-Artifact paths
-────────────────
-  ARTIFACT_PATH         — legacy single-pickle path (kept for monitor_and_retrain)
-  XGB_MODEL_PATH        — native XGBoost JSON (secure, version-stable)
-  PROCESSOR_PATH        — joblib file containing sklearn components only
-  PROFILE_RESOLVER_PATH — joblib file for DynamicProfileResolver mapping
-  ARTIFACT_META_PATH    — JSON sidecar: val_auc, trained_at, feature_names
+[FAIRNESS]
+  - `Gender` is deliberately NOT a model input. It is kept in the data only to
+    audit predictions per group (churn_model writes a fairness report).
+
+[PICKLE-FREE ARTIFACTS]
+  - Every artifact is JSON or CSV in ARTIFACT_DIR (the v3.2 legacy pickle and
+    joblib files are gone): XGBoost native JSON, scaler + KMeans centroids as
+    JSON, profile mapping as JSON, reference data as CSV.
 """
 
 from __future__ import annotations
 
+import os
 from datetime import timedelta
-from typing import Optional
+from pathlib import Path
+from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
-# ── Artifact storage ──────────────────────────────────────────────────────────
-# Legacy combined pickle (kept for backward-compat with DriftMonitor/monitor_and_retrain)
-ARTIFACT_PATH: str = "aegis_quant_artifacts.pkl"
+ROOT = Path(__file__).resolve().parent
+MODEL_VERSION: str = "aegis_quant_v4.0"
 
-# v3.2 modular artifact paths (secure native serialisation)
-XGB_MODEL_PATH:        str = "aegis_xgb.json"
-PROCESSOR_PATH:        str = "aegis_processor.joblib"
-PROFILE_RESOLVER_PATH: str = "aegis_profile_resolver.joblib"
-ARTIFACT_META_PATH:    str = "aegis_artifact_meta.json"
+# ── Data & artifact storage ───────────────────────────────────────────────────
+DATA_PATH: Path = Path(os.getenv("AEGIS_DATA_PATH", ROOT / "data" / "Churn_Modelling.csv"))
+ARTIFACT_DIR: Path = Path(os.getenv("AEGIS_ARTIFACT_DIR", ROOT / "artifacts"))
 
-# Reference dataset for drift monitoring
-REFERENCE_DATA_PATH: str = "reference_data.pkl"
+XGB_MODEL_PATH:        Path = ARTIFACT_DIR / "aegis_xgb.json"
+PROCESSOR_PATH:        Path = ARTIFACT_DIR / "aegis_processor.json"
+PROFILE_RESOLVER_PATH: Path = ARTIFACT_DIR / "aegis_profile_resolver.json"
+ARTIFACT_META_PATH:    Path = ARTIFACT_DIR / "aegis_artifact_meta.json"
+EVALUATION_PATH:       Path = ARTIFACT_DIR / "evaluation.json"
+HOLDOUT_PATH:          Path = ARTIFACT_DIR / "holdout_predictions.csv"
+REFERENCE_DATA_PATH:   Path = ARTIFACT_DIR / "reference_data.csv"   # DriftMonitor baseline
+MODEL_LOG_PATH:        Path = ROOT / "models_log.json"
 
-# ── Asset universe ────────────────────────────────────────────────────────────
-ASSETS: list[str] = ["AAPL", "MSFT", "KO", "NVDA", "TSLA", "BTC", "ETH"]
+# ── Training protocol ─────────────────────────────────────────────────────────
+RANDOM_STATE: int = 42
+TEST_SIZE:    float = 0.20     # untouched hold-out, used once for final metrics
+CV_FOLDS:     int = 5          # out-of-fold predictions on train → threshold choice
+
+# ── Feature column sets ───────────────────────────────────────────────────────
+GEOGRAPHIES: tuple[str, ...] = ("France", "Germany", "Spain")   # France = baseline
+
+# Life-stage features used by KMeans to segment customers into investor profiles
+CLUSTER_FEATURES: list[str] = ["age", "balance", "estimated_salary"]
+
+# Features fed to XGBoost (raw + engineered), followed by the one-hot cluster columns
+CHURN_FEATURES: list[str] = [
+    "credit_score",
+    "age",
+    "tenure",
+    "balance",
+    "num_products",
+    "has_cr_card",
+    "is_active_member",
+    "estimated_salary",
+    "geo_germany",
+    "geo_spain",
+    "balance_to_salary",
+    "zero_balance",
+    "tenure_to_age",
+]
+
+# Columns a caller must supply (everything else is derived in data_pipeline.engineer_features)
+INPUT_FEATURES: list[str] = [
+    "credit_score", "geography", "age", "tenure", "balance",
+    "num_products", "has_cr_card", "is_active_member", "estimated_salary",
+]
+
+# Number of KMeans clusters — must match the three investor profiles
+N_CLUSTERS: int = 3
+
+# Monotonic constraints (+1 raises churn, −1 lowers it, 0 free). Only relationships
+# that are both intuitive and visible in the data are constrained: active members
+# churn less (14 % vs 27 %). Age and product count are clearly non-monotonic.
+MONOTONE_CONSTRAINTS: dict[str, int] = {"is_active_member": -1}
+
+# ── Decision policy ───────────────────────────────────────────────────────────
+# Fallback only: training picks the F1-optimal threshold on out-of-fold
+# predictions and stores it in aegis_artifact_meta.json.
+CHURN_THRESHOLD: float = 0.50
+RISK_TIER_BOUNDS: tuple[float, float] = (0.30, 0.60)   # Low < 0.30 ≤ Elevated < 0.60 ≤ High
+
+# ── Asset universe for the retention portfolio ────────────────────────────────
+ASSETS: list[str] = ["SPY", "BND", "GLD", "KO", "AAPL", "MSFT", "NVDA", "TSLA", "BTC", "ETH"]
 
 TICKER_MAP: dict[str, str] = {
-    "AAPL": "AAPL",
-    "MSFT": "MSFT",
-    "KO":   "KO",
-    "NVDA": "NVDA",
-    "TSLA": "TSLA",
-    "BTC":  "BTC-USD",
-    "ETH":  "ETH-USD",
+    "SPY": "SPY", "BND": "BND", "GLD": "GLD", "KO": "KO",
+    "AAPL": "AAPL", "MSFT": "MSFT", "NVDA": "NVDA", "TSLA": "TSLA",
+    "BTC": "BTC-USD", "ETH": "ETH-USD",
 }
 
 CRYPTO_ASSETS: list[str] = ["BTC", "ETH"]
 TECH_ASSETS:   list[str] = ["AAPL", "MSFT", "NVDA", "TSLA"]
+# Everything else (broad equity, bonds, gold, defensive consumer) is the "core".
 
-# ── Feature column sets ───────────────────────────────────────────────────────
-CLUSTER_FEATURES: list[str] = ["avg_holding_days", "crypto_ratio", "tech_stocks_ratio"]
+ASSET_CLASS: dict[str, str] = {
+    a: ("Crypto" if a in CRYPTO_ASSETS else "Tech equity" if a in TECH_ASSETS else "Core")
+    for a in ASSETS
+}
 
-CHURN_FEATURES: list[str] = [
-    "account_balance",
-    "balance_velocity",
-    "market_pain_index",
-    "login_freq_drop",
-]
-
-# Canonical ordered feature list fed into the unified pipeline
-ALL_FEATURES: list[str] = CLUSTER_FEATURES + CHURN_FEATURES
-
-# Number of KMeans clusters — must match ClusterInjector.N_CLUSTERS
-N_CLUSTERS: int = 3
+# Maximum thematic exposure per investor profile (shares of the whole portfolio)
+PROFILE_EXPOSURE: dict[str, dict[str, float]] = {
+    "conservative": {"crypto": 0.04, "tech": 0.30},
+    "balanced":     {"crypto": 0.10, "tech": 0.50},
+    "aggressive":   {"crypto": 0.25, "tech": 0.70},
+}
 
 # ── Risk aversion base values (γ) per investor archetype ─────────────────────
 RISK_AVERSION: dict[str, float] = {
@@ -90,8 +130,8 @@ RISK_AVERSION: dict[str, float] = {
 # ── Optimisation constraints ──────────────────────────────────────────────────
 WEIGHT_MAX: float = 0.40
 MARKET_CACHE_TTL: timedelta = timedelta(hours=1)
-CHURN_THRESHOLD: float = 0.50
 DIVERSIFICATION_LAMBDA: float = 0.20
+# Minimum weight per CORE asset (thematic assets may go to zero)
 MIN_WEIGHT_BY_PROFILE: dict[str, float] = {
     "aggressive":   0.02,
     "balanced":     0.05,
@@ -106,139 +146,82 @@ SLSQP_MAXITER: int = 2_000
 # ── Unified client data contract (Pydantic v2) ────────────────────────────────
 class ClientFeatures(BaseModel):
     """
-    Single canonical Pydantic model for all client data flowing through
-    AegisQuant.  Replaces both the old ClientPayload (config.py) and the
-    old ClientFeatures (api.py).
+    Single canonical Pydantic model for a bank customer flowing through
+    AegisQuant (REST API body, dashboard input, engine inference).
 
-    Field semantics
-    ───────────────
-    client_id         — internal identifier; optional for the REST API endpoint
-    description       — human-readable label; optional, UI/logging only
-    avg_holding_days  — mean position holding period in calendar days [1, 3650]
-    crypto_ratio      — fraction of AUM the client allocates to crypto [0, 1]
-    tech_stocks_ratio — fraction of AUM the client allocates to tech equities [0, 1]
-    account_balance   — total investable AUM in USD (strict positive)
-    balance_velocity  — normalised net-flow rate; >1 = inflows, <1 = outflows [0, 5]
-    market_pain_index — proprietary drawdown / stress composite score [0, 1]
-    login_freq_drop   — ratio of login frequency decline; 0 = stable, 5 = gone dark [0, 5]
-
-    Cross-field invariant
-    ─────────────────────
-    crypto_ratio + tech_stocks_ratio <= 1.0
-    Ensures the two declared thematic exposures do not exceed 100 % of AUM.
-    Validated after individual field validators via @model_validator(mode="after").
-
-    Compatibility notes
-    ───────────────────
-    - FastAPI endpoint: does not supply client_id or description -> defaults apply.
-    - Streamlit dashboard: supplies all fields from DEMO_CLIENTS dicts.
-    - optimizer.predict_client: accesses all seven numeric fields.
+    Field semantics follow the Kaggle "Churn Modelling" dataset. Bounds cover
+    the training data with headroom; values outside them are rejected (422)
+    rather than silently extrapolated.
     """
     # UI / tracking fields — optional so the REST API never has to supply them
-    client_id:         Optional[int] = None
-    description:       str           = ""
+    customer_id: Optional[int] = None
+    description: str = ""
 
-    # Investor behaviour features (used by ClusterInjector)
-    avg_holding_days:  int   = Field(ge=1,   le=3_650)
-    crypto_ratio:      float = Field(ge=0.0, le=1.0)
-    tech_stocks_ratio: float = Field(ge=0.0, le=1.0)
+    credit_score:     int   = Field(ge=300, le=900, description="Credit score")
+    geography:        Literal["France", "Germany", "Spain"]
+    age:              int   = Field(ge=18, le=100)
+    tenure:           int   = Field(ge=0, le=60, description="Years as a customer")
+    balance:          float = Field(ge=0.0, description="Account balance (EUR)")
+    num_products:     int   = Field(ge=1, le=4, description="Number of bank products held")
+    has_cr_card:      bool
+    is_active_member: bool
+    estimated_salary: float = Field(gt=0.0, description="Estimated yearly salary (EUR)")
 
-    # Financial health features (used by XGBoost churn model)
-    account_balance:   float = Field(gt=0.0)
-    balance_velocity:  float = Field(ge=0.0, le=5.0)
-    market_pain_index: float = Field(ge=0.0, le=1.0)
-    login_freq_drop:   float = Field(ge=0.0, le=5.0)
-
-    @model_validator(mode="after")
-    def ratios_must_not_exceed_one(self) -> "ClientFeatures":
-        """Combined thematic exposure cannot exceed total investable AUM."""
-        total = self.crypto_ratio + self.tech_stocks_ratio
-        if total > 1.0:
-            raise ValueError(
-                f"crypto_ratio ({self.crypto_ratio:.2f}) + "
-                f"tech_stocks_ratio ({self.tech_stocks_ratio:.2f}) "
-                f"= {total:.2f} > 1.0"
-            )
-        return self
+    model_config = {
+        "json_schema_extra": {
+            "examples": [{
+                "credit_score": 619, "geography": "Germany", "age": 52, "tenure": 2,
+                "balance": 118_000.0, "num_products": 3, "has_cr_card": True,
+                "is_active_member": False, "estimated_salary": 101_348.88,
+            }]
+        }
+    }
 
 
-# ── Backward-compatibility alias ─────────────────────────────────────────────
-# app.py imports ClientPayload from config — keep this alias so the Streamlit
-# dashboard continues to work without any changes.
-ClientPayload = ClientFeatures
-
-
-# ── SHAP feature-name mapping ─────────────────────────────────────────────────
-# Order matches ALL_FEATURES + one-hot cluster columns produced by ClusterInjector:
-#   f0=avg_holding_days, f1=crypto_ratio, f2=tech_stocks_ratio,
-#   f3=account_balance,  f4=balance_velocity, f5=market_pain_index,
-#   f6=login_freq_drop,  f7=cluster_0, f8=cluster_1, f9=cluster_2
-SHAP_FEATURE_REASON_MAP: dict[str, str] = {
-    "avg_holding_days":  "Short average holding period (high turnover)",
-    "crypto_ratio":      "High crypto exposure (elevated volatility risk)",
-    "tech_stocks_ratio": "High tech concentration (sector drawdown sensitivity)",
-    "account_balance":   "Low account balance (limited loss cushion)",
-    "balance_velocity":  "Negative balance velocity (net outflows detected)",
-    "market_pain_index": "Elevated market pain index (drawdown stress)",
-    "login_freq_drop":   "Sudden drop in login frequency (disengagement signal)",
-    "cluster_0":         "Cluster 0 membership (investor segmentation signal)",
-    "cluster_1":         "Cluster 1 membership (investor segmentation signal)",
-    "cluster_2":         "Cluster 2 membership (investor segmentation signal)",
-    # Fallback for raw fN booster names
-    "f0": "Short average holding period (high turnover)",
-    "f1": "High crypto exposure (elevated volatility risk)",
-    "f2": "High tech concentration (sector drawdown sensitivity)",
-    "f3": "Low account balance (limited loss cushion)",
-    "f4": "Negative balance velocity (net outflows detected)",
-    "f5": "Elevated market pain index (drawdown stress)",
-    "f6": "Sudden drop in login frequency (disengagement signal)",
-    "f7": "Cluster 0 membership (investor segmentation signal)",
-    "f8": "Cluster 1 membership (investor segmentation signal)",
-    "f9": "Cluster 2 membership (investor segmentation signal)",
+# ── Human-readable feature labels (SHAP risk drivers) ─────────────────────────
+FEATURE_LABELS: dict[str, str] = {
+    "credit_score":      "Credit score",
+    "age":               "Age",
+    "tenure":            "Tenure (years)",
+    "balance":           "Balance",
+    "num_products":      "Products held",
+    "has_cr_card":       "Has credit card",
+    "is_active_member":  "Active member",
+    "estimated_salary":  "Estimated salary",
+    "geo_germany":       "Market: Germany",
+    "geo_spain":         "Market: Spain",
+    "balance_to_salary": "Balance / salary",
+    "zero_balance":      "Zero balance",
+    "tenure_to_age":     "Tenure / age",
+    "cluster_0":         "Segment 0",
+    "cluster_1":         "Segment 1",
+    "cluster_2":         "Segment 2",
 }
 
-# ── Demo batch for the Streamlit dashboard ───────────────────────────────────
+# ── Demo customers for the dashboard (hand-written, not rows of the dataset) ──
 DEMO_CLIENTS: list[dict] = [
     {
-        "client_id": 9001, "description": "Crypto Enthusiast — Aggressive",
-        "avg_holding_days": 6,   "crypto_ratio": 0.75, "tech_stocks_ratio": 0.20,
-        "account_balance": 42_000,  "balance_velocity": 0.62,
-        "market_pain_index": 0.65,  "login_freq_drop": 0.45,
+        "customer_id": 9001, "description": "Mid-career, 3 products, inactive — Germany",
+        "credit_score": 610, "geography": "Germany", "age": 52, "tenure": 2,
+        "balance": 118_000.0, "num_products": 3, "has_cr_card": True,
+        "is_active_member": False, "estimated_salary": 95_000.0,
     },
     {
-        "client_id": 9002, "description": "Institutional HNW — Solid Inflows",
-        "avg_holding_days": 185, "crypto_ratio": 0.00, "tech_stocks_ratio": 0.15,
-        "account_balance": 450_000, "balance_velocity": 1.20,
-        "market_pain_index": 0.05,  "login_freq_drop": 1.40,
+        "customer_id": 9002, "description": "Young professional, 2 products, active — France",
+        "credit_score": 720, "geography": "France", "age": 29, "tenure": 6,
+        "balance": 0.0, "num_products": 2, "has_cr_card": True,
+        "is_active_member": True, "estimated_salary": 61_000.0,
     },
     {
-        "client_id": 9003, "description": "Retail Balanced — Drawdown Frustration",
-        "avg_holding_days": 55,  "crypto_ratio": 0.25, "tech_stocks_ratio": 0.35,
-        "account_balance": 18_000,  "balance_velocity": 0.42,
-        "market_pain_index": 0.88,  "login_freq_drop": 0.28,
+        "customer_id": 9003, "description": "Affluent saver, 1 product, inactive — Spain",
+        "credit_score": 680, "geography": "Spain", "age": 45, "tenure": 8,
+        "balance": 152_000.0, "num_products": 1, "has_cr_card": False,
+        "is_active_member": False, "estimated_salary": 140_000.0,
     },
     {
-        "client_id": 9004, "description": "Active Growth Trader — Marginal Decay",
-        "avg_holding_days": 15,  "crypto_ratio": 0.50, "tech_stocks_ratio": 0.40,
-        "account_balance": 85_000,  "balance_velocity": 0.58,
-        "market_pain_index": 0.55,  "login_freq_drop": 0.75,
-    },
-    {
-        "client_id": 9005, "description": "Conservative Senior — Sudden Outflow",
-        "avg_holding_days": 145, "crypto_ratio": 0.05, "tech_stocks_ratio": 0.10,
-        "account_balance": 110_000, "balance_velocity": 0.22,
-        "market_pain_index": 0.40,  "login_freq_drop": 0.80,
-    },
-    {
-        "client_id": 9006, "description": "Standard Mid-Tier — Status Quo",
-        "avg_holding_days": 45,  "crypto_ratio": 0.15, "tech_stocks_ratio": 0.45,
-        "account_balance": 35_000,  "balance_velocity": 0.98,
-        "market_pain_index": 0.35,  "login_freq_drop": 1.05,
-    },
-    {
-        "client_id": 9007, "description": "Dormant Account — Extreme Aggressive",
-        "avg_holding_days": 4,   "crypto_ratio": 0.80, "tech_stocks_ratio": 0.10,
-        "account_balance": 50_000,  "balance_velocity": 0.05,
-        "market_pain_index": 0.98,  "login_freq_drop": 0.02,
+        "customer_id": 9004, "description": "Retiree, 2 products, active — France",
+        "credit_score": 790, "geography": "France", "age": 67, "tenure": 9,
+        "balance": 96_000.0, "num_products": 2, "has_cr_card": True,
+        "is_active_member": True, "estimated_salary": 38_000.0,
     },
 ]
