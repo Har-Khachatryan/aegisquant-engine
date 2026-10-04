@@ -12,6 +12,11 @@ explains why in plain language, and proposes a risk-adjusted investment offer to
 ![Streamlit](https://img.shields.io/badge/UI-Streamlit-FF4B4B?logo=streamlit&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-31%20passed-2ea44f)
+![License](https://img.shields.io/badge/license-MIT-blue)
+
+**[▶ Live dashboard](https://aegisquant-dashboard-kgnu6u2y6a-ew.a.run.app)** ·
+**[API docs](https://aegisquant-api-kgnu6u2y6a-ew.a.run.app/docs)**
+<br><sub>Hosted on Google Cloud Run — the first visit can take ~30 s while the service wakes up.</sub>
 
 </div>
 
@@ -27,7 +32,7 @@ Measured once on **2,000 customers the model never saw** (Kaggle *Churn Modellin
 | **Churners caught · offer hit-rate** | **61 % · 68 %** at the learned threshold |
 | **Riskiest 20 % of customers** | contain **63 % of all churners** — 3.1× a random call list |
 | **Calibration** | scores are honest probabilities: customers scored 55 % left 59 % of the time |
-| **Fairness** | gender is not a model input; churners caught: 60 % of women, 61 % of men |
+| **Fairness** | gender is deliberately not a model input (a ~0.003-AUC trade-off); churners caught: 60 % of women, 61 % of men |
 
 <sub>Multithreaded XGBoost makes scores vary by about ±0.002 across platforms (the Docker build on Linux
 reports ROC-AUC 0.863).</sub>
@@ -119,6 +124,11 @@ docker run -p 8000:8080 aegisquant                        # API
 docker run -p 8501:8080 -e SERVICE=dashboard aegisquant   # dashboard
 ```
 
+**Google Cloud Run** — `cloudbuild.yaml` builds the image once and deploys both services (one image,
+`SERVICE=api|dashboard`), running as a service account with no project roles and capped at two instances.
+`.gcloudignore` is an allow-list, so only the engine and the Kaggle CSV are uploaded. The command and the
+required build-account roles are in the file header.
+
 ## API
 
 `POST /predict`
@@ -192,6 +202,11 @@ are dropped, `Gender` is kept only for the fairness audit.
 - Without gender as an input the model slightly under-predicts women's churn (22 % vs 25 % actual);
   correlated features can still act as proxies.
 - The portfolio layer is illustrative (trailing returns, ten assets) — not investment advice.
+
+## License
+
+Code: [MIT](LICENSE). The dataset is not covered by this licence — it remains under the terms of its
+Kaggle page.
 
 ---
 

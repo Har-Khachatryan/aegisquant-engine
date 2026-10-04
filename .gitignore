@@ -11,6 +11,9 @@ __pycache__/
 artifacts/
 .pytest_cache/
 
+# Personal presentation notes (pitch, study guide) — kept local
+presentation/
+
 # IDE
 .vscode/
 .idea/

@@ -1,0 +1,55 @@
+# AegisQuant — build once, deploy twice to Cloud Run (public demo: API + dashboard).
+#
+# Run from the repo root (the dedicated build account needs: Cloud Build builder,
+# Run admin, Artifact Registry writer, Logs writer, and actAs on the runtime account):
+#   gcloud builds submit --project PROJECT_ID --config cloudbuild.yaml \
+#     --service-account projects/PROJECT_ID/serviceAccounts/aegisquant-builder@PROJECT_ID.iam.gserviceaccount.com .
+#
+# .gcloudignore is an allow-list: only the engine, its requirements and the public
+# Kaggle CSV are uploaded (never coinstats_intel/ or its licensed data).
+
+substitutions:
+  _REGION: europe-west1
+  _REPO: aegisquant
+  _IMAGE: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/aegisquant
+  # Runtime identity with NO project roles: the services only read files baked into the image.
+  _RUNTIME_SA: aegisquant-runtime@${PROJECT_ID}.iam.gserviceaccount.com
+
+options:
+  dynamicSubstitutions: true
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "${_IMAGE}:${BUILD_ID}", "-t", "${_IMAGE}:latest", "."]
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: ["push", "--all-tags", "${_IMAGE}"]
+
+  - id: deploy-api
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    waitFor: ["push"]
+    args: ["run", "deploy", "aegisquant-api",
+           "--image=${_IMAGE}:${BUILD_ID}", "--region=${_REGION}",
+           "--set-env-vars=SERVICE=api",
+           "--service-account=${_RUNTIME_SA}",
+           "--allow-unauthenticated",
+           "--cpu=1", "--memory=1Gi", "--concurrency=40",
+           "--min-instances=0", "--max-instances=2"]     # cap = cost ceiling for a public demo
+
+  - id: deploy-dashboard
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    waitFor: ["push"]
+    args: ["run", "deploy", "aegisquant-dashboard",
+           "--image=${_IMAGE}:${BUILD_ID}", "--region=${_REGION}",
+           "--set-env-vars=SERVICE=dashboard",
+           "--service-account=${_RUNTIME_SA}",
+           "--allow-unauthenticated",
+           "--cpu=1", "--memory=2Gi",
+           "--session-affinity",          # keep each Streamlit websocket on one instance
+           "--timeout=3600",              # long-lived websocket sessions
+           "--min-instances=0", "--max-instances=2"]

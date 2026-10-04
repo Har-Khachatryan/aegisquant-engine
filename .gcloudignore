@@ -1,0 +1,13 @@
+# Upload allow-list for `gcloud builds submit` (gitignore syntax). Everything at the
+# root is excluded except the AegisQuant engine and the public Kaggle CSV.
+# coinstats_intel/ builds use their own coinstats_intel/.gcloudignore.
+/*
+!/*.py
+!/requirements.txt
+!/Dockerfile
+!/.dockerignore
+!/.streamlit/
+!/reports/
+!/data/
+/data/*
+!/data/Churn_Modelling.csv

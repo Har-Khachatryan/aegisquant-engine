@@ -477,7 +477,8 @@ with tab_segments:
 
     st.divider()
     st.subheader("Fairness audit — hold-out set")
-    st.markdown("Gender is **excluded** from the model (removing it cost no accuracy in cross-validation). The audit "
+    st.markdown("Gender is **excluded** from the model — a deliberate trade-off: including it would add only about "
+                "0.003 ROC-AUC in cross-validation. The audit "
                 "checks *equal opportunity* — are churners caught equally often in every group? — and whether "
                 "predicted risk tracks actual churn.")
     share_cols = ["actual_churn_rate", "mean_predicted", "flagged_share", "recall"]
