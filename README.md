@@ -34,8 +34,8 @@ Measured once on **2,000 customers the model never saw** (Kaggle *Churn Modellin
 | **Calibration** | scores are honest probabilities: customers scored 55 % left 59 % of the time |
 | **Fairness** | gender is deliberately not a model input (a ~0.003-AUC trade-off); churners caught: 60 % of women, 61 % of men |
 
-<sub>Multithreaded XGBoost makes scores vary by about ±0.002 across platforms (the Docker build on Linux
-reports ROC-AUC 0.863).</sub>
+<sub>The live demo serves exactly the model reported here. Retraining on another platform can shift scores
+by about ±0.002 (multithreaded XGBoost).</sub>
 
 ## Business impact
 

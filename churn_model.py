@@ -27,7 +27,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 from datetime import datetime, timezone
 
 import numpy as np
@@ -274,11 +273,18 @@ def run_training_pipeline() -> dict:
 
 
 def ensure_trained() -> None:
-    """Train if any artifact is missing or older than the dataset."""
+    """
+    Train if any artifact is missing or was built from different data. The check
+    uses the dataset's SHA-256 (stored in the metadata), not file timestamps,
+    which git and Docker do not preserve reliably.
+    """
     paths = [XGB_MODEL_PATH, PROCESSOR_PATH, PROFILE_RESOLVER_PATH, ARTIFACT_META_PATH]
-    stale = not all(p.exists() for p in paths) or min(os.path.getmtime(p) for p in paths) < os.path.getmtime(DATA_PATH)
+    stale = not all(p.exists() for p in paths)
+    if not stale:
+        meta = json.loads(ARTIFACT_META_PATH.read_text(encoding="utf-8"))
+        stale = meta.get("data_sha256") != _file_sha256(DATA_PATH)
     if stale:
-        log.warning("  Artifacts missing or older than the dataset — running training pipeline...")
+        log.warning("  Artifacts missing or trained on different data — running training pipeline...")
         run_training_pipeline()
 
 

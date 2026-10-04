@@ -8,6 +8,7 @@
 !/.dockerignore
 !/.streamlit/
 !/reports/
+!/artifacts/
 !/data/
 /data/*
 !/data/Churn_Modelling.csv

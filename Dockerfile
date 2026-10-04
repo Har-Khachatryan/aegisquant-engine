@@ -16,8 +16,9 @@ RUN pip install -r requirements.txt
 
 COPY . .
 
-# Մոդելը սովորեցվում է build-ի ժամանակ, որ կոնտեյները միանգամից պատրաստ լինի. աշխատում է ոչ-root օգտատիրոջից
-RUN python churn_model.py \
+# Եթե artifacts/-ը կա (նույն մոդելը, որի թվերը README-ում են), օգտագործվում է այն. հակառակ դեպքում
+# (օրինակ՝ GitHub-ից նոր clone) մոդելը սովորեցվում է build-ի ժամանակ։ Աշխատում է ոչ-root օգտատիրոջից
+RUN python -c "from churn_model import ensure_trained; ensure_trained()" \
     && useradd --create-home --uid 10001 appuser \
     && chown -R appuser /app
 USER appuser

@@ -6,4 +6,5 @@
 !requirements.txt
 !.streamlit/
 !reports/
+!artifacts/
 !data/Churn_Modelling.csv
